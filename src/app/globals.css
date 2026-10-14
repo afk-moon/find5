@@ -1,0 +1,59 @@
+@import "tailwindcss";
+
+@theme {
+  --color-ink: #0f1923;
+  --color-ink-2: #131e2a;
+  --color-panel: #1a2531;
+  --color-panel-2: #22303e;
+  --color-line: #2e3e4e;
+  --color-bone: #ece8e1;
+  --color-muted: #93a3b0;
+  --color-val: #ff4655;
+  --color-val-dark: #e23b4a;
+  --color-free: #2dd4a7;
+  --color-maybe: #f5c451;
+  --color-quick: #fb923c;
+  --color-long: #a78bfa;
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+
+html {
+  color-scheme: dark;
+}
+
+body {
+  @apply bg-ink text-bone antialiased;
+}
+
+@layer components {
+  .btn {
+    @apply inline-flex cursor-pointer items-center justify-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-50;
+  }
+  .btn-primary {
+    @apply bg-val text-white hover:bg-val-dark;
+  }
+  .btn-secondary {
+    @apply border border-line bg-panel-2 text-bone hover:bg-line;
+  }
+  .btn-ghost {
+    @apply text-muted hover:bg-panel-2 hover:text-bone;
+  }
+  .btn-on {
+    @apply border border-free/60 bg-free/15 text-free hover:bg-free/25;
+  }
+  .card {
+    @apply rounded-xl border border-line bg-panel p-4;
+  }
+  .chip {
+    @apply inline-flex items-center gap-1 rounded-full bg-panel-2 px-2 py-0.5 text-xs text-muted;
+  }
+  .label {
+    @apply text-[11px] font-semibold tracking-wider text-muted uppercase;
+  }
+  .input {
+    @apply rounded-md border border-line bg-ink-2 px-2.5 py-1.5 text-sm text-bone focus:border-val focus:outline-none;
+  }
+  .h1 {
+    @apply text-2xl font-bold tracking-tight;
+  }
+}

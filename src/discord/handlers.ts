@@ -1,0 +1,197 @@
+import { eq } from "drizzle-orm";
+import { getDb } from "@/db";
+import { groups, playSessions, wfhVotes } from "@/db/schema";
+import type { Weekday } from "@/engine";
+import { loadGroupContext, type GroupContext, type MemberView } from "@/server/context";
+import { freeNowNotInLobby, syncLobby } from "@/server/notify";
+import {
+  activeLive,
+  getSession,
+  goToDinner,
+  setPlayerStatus,
+  startLive,
+  summarizeLive,
+} from "@/server/sessions";
+import { clearBallot, ensureVote, getWfhState, toggleBallotDay, weekStartOf } from "@/server/wfh";
+import { upcomingWindows } from "@/server/windows";
+import { lobbyMessage, partyFullMessage, windowsMessage, wfhVoteMessage } from "./messages";
+import { appUrl, postFollowup, type DiscordMessage } from "./rest";
+
+interface DiscordUser {
+  id: string;
+  username: string;
+  global_name?: string | null;
+}
+
+export interface Interaction {
+  id: string;
+  application_id: string;
+  type: number; // 1 ping, 2 slash command, 3 button
+  token: string;
+  guild_id?: string;
+  channel_id?: string;
+  member?: { user: DiscordUser };
+  user?: DiscordUser;
+  data?: {
+    name?: string;
+    options?: Array<{ name: string; value: string | number }>;
+    custom_id?: string;
+  };
+  message?: { id: string; channel_id: string };
+}
+
+export type InteractionResponse = { type: number; data?: DiscordMessage };
+/** Work to run after the response is sent (Discord wants a reply within 3 seconds). */
+type Defer = (task: () => Promise<unknown>) => void;
+
+const EPHEMERAL = 64;
+const reply = (data: DiscordMessage): InteractionResponse => ({ type: 4, data });
+const update = (data: DiscordMessage): InteractionResponse => ({ type: 7, data });
+const ephemeral = (content: string): InteractionResponse => ({
+  type: 4,
+  data: { content, flags: EPHEMERAL, allowed_mentions: { parse: [] } },
+});
+
+export async function handleInteraction(i: Interaction, defer: Defer): Promise<InteractionResponse> {
+  if (i.type === 1) return { type: 1 }; // PING → PONG
+
+  const ctx = await groupFor(i);
+  if (!ctx) return ephemeral(`No group yet. Open ${appUrl()} and log in first.`);
+  const discordId = (i.member?.user ?? i.user)?.id;
+  const me = ctx.members.find((m) => m.discordId === discordId);
+  if (!me) return ephemeral(`I don't know you yet. Log in with Discord once at ${appUrl()}/login, then try again.`);
+
+  try {
+    if (i.type === 2) return await onCommand(i, ctx, me, defer);
+    if (i.type === 3) return await onButton(i, ctx, me, defer);
+    return ephemeral("Unsupported interaction.");
+  } catch (err) {
+    return ephemeral(`⚠️ ${err instanceof Error ? err.message : "Something went wrong."}`);
+  }
+}
+
+/** The group bound to this server. The first time a server uses the bot, the first group claims it. */
+async function groupFor(i: Interaction): Promise<GroupContext | null> {
+  const db = await getDb();
+  let [group] = i.guild_id ? await db.select().from(groups).where(eq(groups.discordGuildId, i.guild_id)) : [];
+  if (!group) {
+    [group] = await db.select().from(groups).limit(1);
+    if (!group) return null;
+    if (!group.discordGuildId && i.guild_id) {
+      await db
+        .update(groups)
+        .set({ discordGuildId: i.guild_id, discordChannelId: group.discordChannelId ?? i.channel_id ?? null })
+        .where(eq(groups.id, group.id));
+    }
+  }
+  return loadGroupContext(group.id);
+}
+
+/** After replying, look up the reply's message id so the web app can edit it later. */
+function rememberReply(i: Interaction, save: (ref: string) => Promise<unknown>) {
+  return async () => {
+    const res = await fetch(`https://discord.com/api/v10/webhooks/${i.application_id}/${i.token}/messages/@original`);
+    if (!res.ok) return;
+    const msg = (await res.json()) as { id: string; channel_id: string };
+    await save(`${msg.channel_id}:${msg.id}`);
+  };
+}
+
+async function onCommand(i: Interaction, ctx: GroupContext, me: MemberView, defer: Defer) {
+  const option = (name: string) => i.data?.options?.find((o) => o.name === name)?.value;
+  const db = await getDb();
+
+  switch (i.data?.name) {
+    case "windows":
+      return reply(windowsMessage(ctx, upcomingWindows(ctx), appUrl()));
+
+    case "lfg": {
+      const { sessionId } = await startLive(ctx, me.id);
+      const s = (await getSession(ctx.group.id, sessionId))!;
+      const freeNow = freeNowNotInLobby(ctx, s.players.map((p) => p.userId));
+      // This reply becomes the lobby message that button clicks and the web app keep updated.
+      defer(
+        rememberReply(i, (ref) =>
+          db.update(playSessions).set({ discordMessageId: ref }).where(eq(playSessions.id, sessionId)),
+        ),
+      );
+      return reply(lobbyMessage(ctx, s.session, summarizeLive(ctx.group.partySize, s.players), freeNow));
+    }
+
+    case "dinner":
+    case "back": {
+      const live = await activeLive(ctx.group.id);
+      if (!live) return ephemeral("No lobby is open. Start one with /lfg.");
+      const before = summarizeLive(ctx.group.partySize, live.players).state;
+      const kind = option("kind") === "long" ? "long" : "quick";
+      if (i.data?.name === "dinner") await goToDinner(ctx, live.session.id, me.id, kind);
+      else await setPlayerStatus(ctx, live.session.id, me.id, "in");
+      defer(() => syncLobby(ctx, live.session.id, before));
+      if (i.data?.name === "back") return ephemeral("Welcome back! 🎮");
+      return ephemeral(
+        kind === "quick"
+          ? `🍔 Enjoy! The party will wait about ${ctx.group.maxPauseMinutes} min.`
+          : "🍝 Enjoy dinner! The lobby will look for a sub. Tap “I'm back” when you return.",
+      );
+    }
+
+    case "wfh": {
+      const weekStart = weekStartOf(ctx.group.homeTimezone, option("week") === "this" ? 0 : 1);
+      const vote = await ensureVote(ctx.group.id, weekStart);
+      defer(rememberReply(i, (ref) => db.update(wfhVotes).set({ discordMessageId: ref }).where(eq(wfhVotes.id, vote.id))));
+      return reply(wfhVoteMessage(ctx, await getWfhState(ctx, weekStart), appUrl()));
+    }
+  }
+  return ephemeral("Unknown command.");
+}
+
+async function onButton(i: Interaction, ctx: GroupContext, me: MemberView, defer: Defer) {
+  const [kind, a, b] = (i.data?.custom_id ?? "").split(":");
+
+  if (kind === "lfg") {
+    const action = a;
+    const sessionId = b;
+    const s = await getSession(ctx.group.id, sessionId);
+    if (!s || s.session.status !== "active") return ephemeral("That lobby is closed. Start a new one with /lfg.");
+    const before = summarizeLive(ctx.group.partySize, s.players).state;
+    switch (action) {
+      case "in":
+      case "back":
+        await setPlayerStatus(ctx, sessionId, me.id, "in");
+        break;
+      case "soon":
+        await setPlayerStatus(ctx, sessionId, me.id, "soon", new Date(Date.now() + 15 * 60_000));
+        break;
+      case "declined":
+      case "left":
+        await setPlayerStatus(ctx, sessionId, me.id, action);
+        break;
+      case "quick":
+      case "long":
+        await goToDinner(ctx, sessionId, me.id, action);
+        break;
+      default:
+        return ephemeral("Unknown button.");
+    }
+    const fresh = (await getSession(ctx.group.id, sessionId))!;
+    const summary = summarizeLive(ctx.group.partySize, fresh.players);
+    if (before !== "full" && summary.state === "full") {
+      defer(() => postFollowup(i.application_id, i.token, partyFullMessage(ctx, summary)));
+    }
+    if (!fresh.session.discordMessageId && i.message) {
+      const ref = `${i.message.channel_id}:${i.message.id}`;
+      defer(() => getDb().then((db) => db.update(playSessions).set({ discordMessageId: ref }).where(eq(playSessions.id, sessionId))));
+    }
+    return update(lobbyMessage(ctx, fresh.session, summary));
+  }
+
+  if (kind === "wfh") {
+    const weekStart = a;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(weekStart)) return ephemeral("Unknown week.");
+    if (b === "none") await clearBallot(ctx, weekStart, me.id);
+    else await toggleBallotDay(ctx, weekStart, me.id, Number(b) as Weekday);
+    return update(wfhVoteMessage(ctx, await getWfhState(ctx, weekStart), appUrl()));
+  }
+
+  return ephemeral("Unknown button.");
+}
