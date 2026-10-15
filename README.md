@@ -139,6 +139,11 @@ you've already started the app once.
 
 ### Troubleshooting
 
+- **`'next' is not recognized as an internal or external command`** (Windows), or **`next: command not
+  found`** (Mac/Linux): the dependencies aren't installed in this folder. Run `npm install` in the
+  project folder, then `npm run dev`. If you copied the folder from another computer, delete its
+  `node_modules` folder first: in PowerShell `Remove-Item -Recurse -Force node_modules`, on Mac/Linux
+  `rm -rf node_modules`.
 - **`node` or `npm` not found, or “Unsupported engine”:** install or upgrade Node (step 1), then open a
   new terminal. With nvm, run `nvm use` in the project folder.
 - **`npm install` fails with `ERESOLVE` peer-dependency errors:** the hidden `.npmrc` file is missing.
