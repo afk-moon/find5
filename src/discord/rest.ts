@@ -4,8 +4,26 @@ export function botConfigured(): boolean {
   return !!process.env.DISCORD_BOT_TOKEN;
 }
 
+/**
+ * The app's public address, e.g. "https://your-project.vercel.app". Uses APP_URL, else (on Vercel) the
+ * project's production domain, else the current request's address. A missing "https://", a trailing
+ * slash, or a path in APP_URL is tolerated.
+ */
 export function appUrl(fallbackOrigin?: string): string {
-  return (process.env.APP_URL ?? fallbackOrigin ?? "http://localhost:3000").replace(/\/$/, "");
+  const raw =
+    process.env.APP_URL?.trim() || process.env.VERCEL_PROJECT_PRODUCTION_URL || fallbackOrigin || "http://localhost:3000";
+  const local = /^(localhost|127\.0\.0\.1)(:|\/|$)/i.test(raw);
+  const withScheme = /^https?:\/\//i.test(raw) ? raw : `${local ? "http" : "https"}://${raw}`;
+  try {
+    return new URL(withScheme).origin;
+  } catch {
+    return withScheme.replace(/\/+$/, "");
+  }
+}
+
+/** Where Discord sends people after "Log in with Discord". It must be listed under OAuth2 → Redirects. */
+export function discordRedirectUri(fallbackOrigin?: string): string {
+  return `${appUrl(fallbackOrigin)}/api/auth/discord/callback`;
 }
 
 export interface Button {

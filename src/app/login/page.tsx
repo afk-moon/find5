@@ -1,8 +1,10 @@
 import { asc, eq } from "drizzle-orm";
+import { headers } from "next/headers";
 import { joinAsNewMemberAction, loginAsAction } from "@/app/actions";
 import { Avatar } from "@/components/Avatar";
 import { getDb } from "@/db";
 import { memberProfiles, memberships, user } from "@/db/schema";
+import { discordRedirectUri } from "@/discord/rest";
 import { zoneAbbr } from "@/lib/format";
 import { devLoginEnabled, discordLoginConfigured } from "@/server/auth";
 import { DiscordLoginButton, ZonePicker } from "./LoginClient";
@@ -17,9 +19,17 @@ const ERRORS: Record<string, string> = {
   name: "Please enter a name.",
 };
 
+/** The address this page was opened at (used when APP_URL isn't set, e.g. locally). */
+async function requestOrigin(): Promise<string | undefined> {
+  const h = await headers();
+  const host = (h.get("x-forwarded-host") ?? h.get("host"))?.split(",")[0].trim();
+  return host ? `${h.get("x-forwarded-proto")?.split(",")[0].trim() ?? "http"}://${host}` : undefined;
+}
+
 export default async function LoginPage({ searchParams }: { searchParams: Promise<{ error?: string; stale?: string }> }) {
   const { error, stale } = await searchParams;
   const dev = devLoginEnabled();
+  const discordReady = discordLoginConfigured();
   const db = await getDb();
   const people = dev
     ? await db
@@ -51,8 +61,18 @@ export default async function LoginPage({ searchParams }: { searchParams: Promis
       )}
 
       <div className="card space-y-3">
-        <DiscordLoginButton enabled={discordLoginConfigured()} />
+        <DiscordLoginButton enabled={discordReady} />
         <p className="text-center text-xs text-muted">Your Discord account links your pings in the bot&apos;s messages.</p>
+        {discordReady && (
+          <details className="text-xs text-muted">
+            <summary className="cursor-pointer text-center">Discord says “Invalid OAuth2 redirect_uri”?</summary>
+            <p className="mt-2">
+              In the Discord Developer Portal, open your app → <b>OAuth2</b> → <b>Redirects</b>, add exactly this URL, and
+              click <b>Save Changes</b>:
+            </p>
+            <code className="mt-1 block break-all rounded bg-ink-2 px-2 py-1 text-bone">{discordRedirectUri(await requestOrigin())}</code>
+          </details>
+        )}
       </div>
 
       {dev && (

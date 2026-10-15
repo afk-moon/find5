@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { NextResponse, type NextRequest } from "next/server";
-import { appUrl } from "@/discord/rest";
+import { appUrl, discordRedirectUri } from "@/discord/rest";
 import { OAUTH_STATE_COOKIE, TZ_COOKIE } from "@/server/oauth-cookies";
 
 /** Start "Log in with Discord" (OAuth2 authorization code flow, identify scope only). */
@@ -9,13 +9,23 @@ export async function GET(req: NextRequest) {
   if (!clientId || !process.env.DISCORD_CLIENT_SECRET) {
     return NextResponse.redirect(new URL("/login?error=discord-not-configured", req.url));
   }
+
+  // Start on the address Discord sends people back to (e.g. when someone opened a deployment-specific
+  // Vercel URL), so the state cookie set below is there when they return.
+  const home = new URL(appUrl(req.nextUrl.origin));
+  if (home.host !== req.nextUrl.host && !req.nextUrl.searchParams.has("moved")) {
+    const there = new URL(`/api/auth/discord${req.nextUrl.search}`, home);
+    there.searchParams.set("moved", "1");
+    return NextResponse.redirect(there);
+  }
+
   const state = randomBytes(16).toString("hex");
   const authorize = new URL("https://discord.com/oauth2/authorize");
   authorize.search = new URLSearchParams({
     client_id: clientId,
     response_type: "code",
     scope: "identify",
-    redirect_uri: `${appUrl(req.nextUrl.origin)}/api/auth/discord/callback`,
+    redirect_uri: discordRedirectUri(req.nextUrl.origin),
     state,
     prompt: "none",
   }).toString();

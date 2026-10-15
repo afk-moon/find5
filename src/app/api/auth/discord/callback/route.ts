@@ -2,7 +2,7 @@ import { eq } from "drizzle-orm";
 import { NextResponse, type NextRequest } from "next/server";
 import { getDb } from "@/db";
 import { account, memberProfiles, user } from "@/db/schema";
-import { appUrl } from "@/discord/rest";
+import { appUrl, discordRedirectUri } from "@/discord/rest";
 import { DEV_USER_COOKIE } from "@/server/auth";
 import { createMember } from "@/server/availability";
 import { SESSION_COOKIE, createSessionToken, sessionCookieOptions } from "@/server/session-cookie";
@@ -31,7 +31,7 @@ export async function GET(req: NextRequest) {
       client_secret: process.env.DISCORD_CLIENT_SECRET!,
       grant_type: "authorization_code",
       code,
-      redirect_uri: `${base}/api/auth/discord/callback`,
+      redirect_uri: discordRedirectUri(req.nextUrl.origin),
     }),
   });
   if (!tokenRes.ok) return fail("oauth-token");

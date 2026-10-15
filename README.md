@@ -239,7 +239,9 @@ using Node built-ins only, so there's nothing extra to install.
 6. In the developer portal, using your public URL:
    - **General Information → Interactions Endpoint URL:** `<APP_URL>/api/discord/interactions`.
      Discord sends a test request when you save, and the app answers it.
-   - **OAuth2 → Redirects:** `<APP_URL>/api/auth/discord/callback`
+   - **OAuth2 → Redirects:** `<APP_URL>/api/auth/discord/callback`, then **Save Changes**. It must match
+     exactly (https, spelling, no trailing slash), otherwise Discord says “Invalid OAuth2 redirect_uri”.
+     The login page (under that message) and **Settings** show the exact URL to copy.
 7. Everyone opens the site and clicks **Log in with Discord** once, so the bot can match Discord users to
    members. The first time someone uses a command in your server, that channel becomes the announcement
    channel (you can change it in **Settings**).
@@ -272,7 +274,7 @@ This works on any Node host with a Postgres database. On Vercel with Neon:
 
    | Variable | Value |
    |---|---|
-   | `APP_URL` | Your site's address, e.g. `https://find5.vercel.app` (no trailing slash) |
+   | `APP_URL` | Your site's address, e.g. `https://your-project.vercel.app` (no trailing slash) |
    | `AUTH_SECRET` | Any long random string, e.g. from `node -e "console.log(crypto.randomUUID()+crypto.randomUUID())"` |
    | `CRON_SECRET` | Another random string (protects the daily job) |
    | Discord variables | Only if you use Discord (see [Discord setup](#discord-setup)) |

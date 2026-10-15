@@ -1,7 +1,7 @@
 import { saveSettingsAction } from "@/app/actions";
 import { Avatar } from "@/components/Avatar";
 import { MemberName } from "@/components/LateTag";
-import { appUrl, botConfigured } from "@/discord/rest";
+import { appUrl, botConfigured, discordRedirectUri } from "@/discord/rest";
 import { WEEKDAY_LONG, zoneAbbr } from "@/lib/format";
 import { US_TIMEZONES } from "@/lib/zones";
 import { discordLoginConfigured } from "@/server/auth";
@@ -121,10 +121,13 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
           <Status ok={discordLoginConfigured()} label="Log in with Discord" fix="DISCORD_APPLICATION_ID + DISCORD_CLIENT_SECRET" />
           <Status ok={botConfigured()} label="Discord bot" fix="DISCORD_BOT_TOKEN + DISCORD_PUBLIC_KEY" />
           <Status ok={!!g.discordChannelId} label="Announcement channel" fix="set a channel ID, or run /lfg in Discord" />
-          <div className="pt-2 text-xs text-muted">
-            Interactions endpoint URL for the Discord developer portal:
-            <code className="mt-1 block break-all rounded bg-ink-2 px-2 py-1 text-bone">{url}/api/discord/interactions</code>
-            Setup steps are in the README.
+          <div className="space-y-1 pt-2 text-xs text-muted">
+            <div>For the Discord developer portal:</div>
+            <div>General Information → Interactions Endpoint URL</div>
+            <code className="block break-all rounded bg-ink-2 px-2 py-1 text-bone">{`${url}/api/discord/interactions`}</code>
+            <div>OAuth2 → Redirects</div>
+            <code className="block break-all rounded bg-ink-2 px-2 py-1 text-bone">{discordRedirectUri()}</code>
+            <div>Setup steps are in the README.</div>
           </div>
         </div>
       </aside>
