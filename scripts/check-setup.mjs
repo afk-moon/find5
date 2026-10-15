@@ -27,6 +27,6 @@ if (installed && !existsSync(shim)) {
 }
 
 if (problems.length) {
-  console.error(`\n⚠️  FiveStack can't start yet:\n${problems.map((p) => `  • ${p}`).join("\n")}\n`);
+  console.error(`\n⚠️  Receptionist can't start yet:\n${problems.map((p) => `  • ${p}`).join("\n")}\n`);
   process.exit(1);
 }

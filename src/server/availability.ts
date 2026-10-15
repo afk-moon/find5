@@ -115,7 +115,7 @@ export async function createMember(input: {
   await db.insert(user).values({
     id,
     name: input.name.trim().slice(0, 40) || "Player",
-    email: input.email ?? `${id}@members.fivestack.local`,
+    email: input.email ?? `${id}@members.receptionist.local`,
     image: input.image ?? null,
   });
   await db.insert(memberProfiles).values({ userId: id, timezone, discordId: input.discordId ?? null });

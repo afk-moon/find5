@@ -2,7 +2,7 @@
   "name": "discapp",
   "version": "0.1.0",
   "private": true,
-  "description": "FiveStack: schedule Valorant 5-stacks across time zones, plan around dinner, and sync hybrid WFH days.",
+  "description": "Receptionist: schedule Valorant 5-stacks across time zones, plan around dinner, and sync hybrid WFH days.",
   "engines": {
     "node": ">=20.9"
   },

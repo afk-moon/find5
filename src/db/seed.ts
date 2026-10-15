@@ -158,7 +158,7 @@ export async function seedDemo(db: DB) {
   await db.insert(groups).values({ id: DEMO_GROUP_ID, name: "Valorant Squad", homeTimezone: HOME_ZONE });
 
   for (const [i, m] of DEMO_MEMBERS.entries()) {
-    await db.insert(user).values({ id: m.id, name: m.name, email: `${m.id}@demo.fivestack.local` });
+    await db.insert(user).values({ id: m.id, name: m.name, email: `${m.id}@demo.receptionist.local` });
     await db.insert(memberProfiles).values({
       userId: m.id,
       timezone: m.timezone,

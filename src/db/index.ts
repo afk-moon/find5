@@ -13,16 +13,16 @@ import { postgresJsUrl } from "./url";
  */
 export type DB = PgliteDatabase<typeof schema>;
 
-const globalForDb = globalThis as unknown as { __fivestackDb?: Promise<DB> };
+const globalForDb = globalThis as unknown as { __receptionistDb?: Promise<DB> };
 
 export function getDb(): Promise<DB> {
-  if (!globalForDb.__fivestackDb) {
-    globalForDb.__fivestackDb = init().catch((err) => {
-      globalForDb.__fivestackDb = undefined; // retry on the next request
+  if (!globalForDb.__receptionistDb) {
+    globalForDb.__receptionistDb = init().catch((err) => {
+      globalForDb.__receptionistDb = undefined; // retry on the next request
       throw err;
     });
   }
-  return globalForDb.__fivestackDb;
+  return globalForDb.__receptionistDb;
 }
 
 async function init(): Promise<DB> {

@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "FiveStack: Valorant party planner",
+  title: "Receptionist: Valorant party planner",
   description: "Find times for a full Valorant party across time zones, plan around dinner, and sync WFH days.",
 };
 

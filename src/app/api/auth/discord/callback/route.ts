@@ -68,7 +68,7 @@ async function findOrCreateDiscordMember(p: DiscordProfile, timezone?: string): 
     image,
     timezone: timezone ?? "America/Chicago",
     discordId: p.id,
-    email: `${p.id}@discord.fivestack.local`,
+    email: `${p.id}@discord.receptionist.local`,
   });
   await db.insert(account).values({ id: crypto.randomUUID(), accountId: p.id, providerId: "discord", userId: id });
   return id;

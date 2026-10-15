@@ -12,7 +12,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
       <header className="sticky top-0 z-20 border-b border-line bg-ink-2/90 backdrop-blur">
         <div className="mx-auto flex max-w-6xl flex-wrap items-center gap-x-6 gap-y-2 px-4 py-3">
           <Link href="/" className="text-lg font-black tracking-[0.18em] text-val">
-            FIVE<span className="text-bone">STACK</span>
+            RECEPTIONIST
           </Link>
           <NavLinks />
           <div className="ml-auto flex items-center gap-2 text-sm">

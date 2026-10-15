@@ -1,4 +1,4 @@
-// Register FiveStack's slash commands with Discord (no dependencies).
+// Register Receptionist's slash commands with Discord (no dependencies).
 // Usage: node --env-file=.env.local scripts/register-commands.mjs
 // Set DISCORD_GUILD_ID to register them in your server instantly (global commands can take a while).
 

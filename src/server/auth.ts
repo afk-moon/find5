@@ -2,7 +2,7 @@ import { cookies } from "next/headers";
 import { SESSION_COOKIE, readSessionToken } from "./session-cookie";
 
 /** Cookie holding the demo member you're "logged in as" while developing locally. */
-export const DEV_USER_COOKIE = "fivestack_dev_user";
+export const DEV_USER_COOKIE = "receptionist_dev_user";
 
 export function devLoginEnabled(): boolean {
   return process.env.NODE_ENV !== "production" || process.env.ALLOW_DEV_LOGIN === "1";

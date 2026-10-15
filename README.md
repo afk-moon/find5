@@ -1,4 +1,4 @@
-# FiveStack
+# Receptionist
 
 Find times when a full Valorant party (5 people, or any size you set) can play across US time zones. It
 plans around dinner and helps hybrid workers line up their work-from-home days. It's a web app plus an
@@ -219,7 +219,8 @@ session's Discord post.
 The website works fine without Discord. Discord adds login, pings, slash commands, and announcements,
 using Node built-ins only, so there's nothing extra to install.
 
-1. Create an application at <https://discord.com/developers/applications>.
+1. Create an application at <https://discord.com/developers/applications>. Name it **Receptionist**:
+   the application's name is the bot's name in your server.
 2. Copy these into `.env.local` (template: `.env.example`):
    - **General Information**: Application ID → `DISCORD_APPLICATION_ID`; Public Key → `DISCORD_PUBLIC_KEY`
    - **Bot**: Reset Token → `DISCORD_BOT_TOKEN`

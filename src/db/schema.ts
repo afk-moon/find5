@@ -60,7 +60,7 @@ export const verification = pgTable("verification", {
   updatedAt: updatedAt(),
 });
 
-// ─── FiveStack ──────────────────────────────────────────────────────────────────────────────
+// ─── Receptionist ───────────────────────────────────────────────────────────────────────────
 
 export const memberProfiles = pgTable("member_profiles", {
   userId: text("user_id")

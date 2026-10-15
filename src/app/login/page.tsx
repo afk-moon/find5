@@ -40,9 +40,7 @@ export default async function LoginPage({ searchParams }: { searchParams: Promis
   return (
     <main className="mx-auto max-w-md space-y-6 px-4 py-14">
       <div className="text-center">
-        <div className="text-3xl font-black tracking-[0.18em] text-val">
-          FIVE<span className="text-bone">STACK</span>
-        </div>
+        <div className="text-2xl font-black tracking-[0.18em] text-val sm:text-3xl">RECEPTIONIST</div>
         <p className="mt-2 text-sm text-muted">Find times for a full Valorant party, across time zones, around dinner.</p>
       </div>
 

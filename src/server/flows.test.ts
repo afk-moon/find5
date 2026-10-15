@@ -4,7 +4,7 @@ import path from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
 
 // Throwaway embedded database (seeded with the demo group on first use).
-process.env.PGLITE_DIR = mkdtempSync(path.join(tmpdir(), "fivestack-flows-"));
+process.env.PGLITE_DIR = mkdtempSync(path.join(tmpdir(), "receptionist-flows-"));
 
 const { loadGroupContext } = await import("./context");
 const { upcomingWindows } = await import("./windows");

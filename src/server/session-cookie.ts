@@ -1,12 +1,12 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 
-export const SESSION_COOKIE = "fivestack_session";
+export const SESSION_COOKIE = "receptionist_session";
 const MAX_AGE_S = 60 * 60 * 24 * 30;
 
 function secret(): string {
   if (process.env.AUTH_SECRET) return process.env.AUTH_SECRET;
   if (process.env.NODE_ENV === "production") throw new Error("Set AUTH_SECRET in production.");
-  return "fivestack-local-dev-secret";
+  return "receptionist-local-dev-secret";
 }
 
 const sign = (payload: string) => createHmac("sha256", secret()).update(payload).digest("base64url");
