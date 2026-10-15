@@ -94,12 +94,13 @@ export function syncLobby(ctx: GroupContext, sessionId: string, previous?: LiveS
     const s = await getSession(ctx.group.id, sessionId);
     if (!s) return;
     const summary = summarizeLive(ctx.group.partySize, s.players);
+    // Every render lists who's free and hasn't answered, so edits don't drop that line.
+    const message = lobbyMessage(ctx, s.session, summary, freeNowNotInLobby(ctx, s.players.map((p) => p.userId)));
     const ref = parseRef(s.session.discordMessageId);
     if (ref) {
-      await editMessage(ref.channelId, ref.messageId, lobbyMessage(ctx, s.session, summary));
+      await editMessage(ref.channelId, ref.messageId, message);
     } else if (ctx.group.discordChannelId && s.session.status === "active") {
-      const freeNow = freeNowNotInLobby(ctx, s.players.map((p) => p.userId));
-      const posted = await postMessage(ctx.group.discordChannelId, lobbyMessage(ctx, s.session, summary, freeNow));
+      const posted = await postMessage(ctx.group.discordChannelId, message);
       const db = await getDb();
       await db
         .update(playSessions)

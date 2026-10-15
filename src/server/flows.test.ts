@@ -1,7 +1,7 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 
 // Throwaway embedded database (seeded with the demo group on first use).
 process.env.PGLITE_DIR = mkdtempSync(path.join(tmpdir(), "receptionist-flows-"));
@@ -14,6 +14,7 @@ const { getWfhState, toggleBallotDay, closeVote, reopenVote, weekStartOf } = awa
 const { saveProfile, saveDateOverride, createMember, saveWfhWeek } = await import("./availability");
 const { openLateVotes, toggleLateReport, getLateTally } = await import("./lateness");
 const { setAwayUntil, resolveBackTime } = await import("./away");
+const { freeNowNotInLobby } = await import("./notify");
 const { lobbyMessage, wfhVoteMessage, plannedSessionMessage, windowsMessage, storedPlannedMessage, mention, awayMessage } =
   await import("@/discord/messages");
 const { handleInteraction } = await import("@/discord/handlers");
@@ -333,7 +334,7 @@ describe("/back with a time", () => {
       let s = (await getSession(ctx.group.id, lobby.id))!;
       const summary = summarizeLive(5, s.players);
       expect(summary.soon).toEqual([{ id: "demo-rosa", backAt: at("2031-03-04T22:30") }]);
-      const msg = lobbyMessage(ctx, s.session, summary);
+      const msg = lobbyMessage(ctx, s.session, summary, []);
       expect(msg.content).toContain(`back <t:${at("2031-03-04T22:30") / 1000}:t>`);
       assertDiscordLimits(msg);
 
@@ -376,5 +377,58 @@ describe("/back with a time", () => {
     expect(await back("4:30am")).toMatch(/between 8am and 4am/);
     expect(await back("4:30am", "time")).toMatch(/between 8am and 4am/); // the option's old name still works
     expect(await back()).toMatch(/\/back 9pm/); // old /back with no time, and no lobby open
+  });
+});
+
+describe("lobby message in Discord", () => {
+  it("keeps listing who's free (and hasn't answered) after someone taps a button", async () => {
+    // Pin the clock (Date only, so database I/O is untouched) to an evening when Maya and Dev are free.
+    vi.useFakeTimers({ toFake: ["Date"], shouldAdvanceTime: true });
+    vi.setSystemTime(DateTime.fromISO("2031-03-11T20:00", { zone: "America/Chicago" }).toJSDate());
+    const db = await getDb();
+    let sessionId = "";
+    try {
+      for (const id of ["demo-maya", "demo-dev"]) await saveDateOverride(id, "2031-03-11", pattern({ F: [["12:00", "23:30"]] }));
+      await db.update(memberProfiles).set({ discordId: "1001" }).where(eq(memberProfiles.userId, "demo-kai"));
+      await db.update(memberProfiles).set({ discordId: "1002" }).where(eq(memberProfiles.userId, "demo-sam"));
+      const user = (id: string) => ({ user: { id, username: id } });
+
+      const opened = await handleInteraction(
+        { id: "1", application_id: "app", type: 2, token: "t", channel_id: "chan", member: user("1001"), data: { name: "lfg" } },
+        () => {},
+      );
+      expect(opened.data!.content).toContain("📣 Free right now");
+      sessionId = (await activeLive(ctx.group.id))!.session.id;
+
+      // Sam taps "I'm in": the message is edited in place and still lists who's free but hasn't answered.
+      const tapped = await handleInteraction(
+        {
+          id: "2",
+          application_id: "app",
+          type: 3,
+          token: "t",
+          channel_id: "chan",
+          member: user("1002"),
+          data: { custom_id: `lfg:in:${sessionId}` },
+          message: { id: "msg", channel_id: "chan" },
+        },
+        () => {},
+      );
+      expect(tapped.type).toBe(7);
+      ctx = await fresh();
+      const free = freeNowNotInLobby(ctx, ["demo-kai", "demo-sam"]);
+      expect(free).toEqual(expect.arrayContaining(["demo-maya", "demo-dev"]));
+      expect(tapped.data!.content).toContain(`📣 Free right now: ${free.map((id) => mention(ctx.byId.get(id))).join(", ")}`);
+      assertDiscordLimits(tapped.data!);
+    } finally {
+      if (sessionId) await endSession(ctx, sessionId);
+      vi.useRealTimers();
+    }
+
+    // A closed lobby doesn't list or mention anyone.
+    const ended = (await getSession(ctx.group.id, sessionId))!;
+    const closed = lobbyMessage(ctx, ended.session, summarizeLive(5, ended.players), ["demo-maya"]);
+    expect(closed.content).not.toContain("Free right now");
+    expect(closed.allowed_mentions).toEqual({ users: [] });
   });
 });

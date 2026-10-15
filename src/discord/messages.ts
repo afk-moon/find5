@@ -133,21 +133,26 @@ export function storedPlannedMessage(ctx: GroupContext, session: PlaySession, la
   );
 }
 
+/**
+ * The live lobby post. `freeNow` is everyone free by their schedule who hasn't answered yet. Pass it on
+ * every render, edits included, or the "Free right now" line vanishes as soon as someone taps a button.
+ * (Edited messages don't ping, so keeping the mentions doesn't notify anyone again.)
+ */
 export function lobbyMessage(
   ctx: GroupContext,
   session: PlaySession,
   summary: LiveSummary,
-  freeNow: string[] = [],
+  freeNow: readonly string[],
 ): DiscordMessage {
   const P = ctx.group.partySize;
-  const header =
-    session.status !== "active"
-      ? "🏁 **Lobby closed.** GGs!"
-      : summary.state === "full"
-        ? `✅ **Party's full!** (${summary.playing.length}/${P}) Queue up.`
-        : summary.state === "paused"
-          ? "⏸️ **Paused:** waiting on dinner."
-          : `🎮 **Who's in?** ${summary.playing.length}/${P}, need ${summary.needed} more`;
+  const active = session.status === "active";
+  const header = !active
+    ? "🏁 **Lobby closed.** GGs!"
+    : summary.state === "full"
+      ? `✅ **Party's full!** (${summary.playing.length}/${P}) Queue up.`
+      : summary.state === "paused"
+        ? "⏸️ **Paused:** waiting on dinner."
+        : `🎮 **Who's in?** ${summary.playing.length}/${P}, need ${summary.needed} more`;
   const lines = [header];
   if (summary.playing.length) lines.push(`In: ${names(ctx, summary.playing)}`);
   for (const e of summary.eating) {
@@ -160,7 +165,7 @@ export function lobbyMessage(
   }
   if (summary.declined.length) lines.push(`🙅 Not tonight: ${names(ctx, summary.declined)}`);
   if (summary.left.length) lines.push(`👋 Left: ${names(ctx, summary.left)}`);
-  if (freeNow.length) lines.push(`📣 Free right now: ${names(ctx, freeNow)}`);
+  if (active && freeNow.length) lines.push(`📣 Free right now: ${names(ctx, freeNow)}`);
 
   const id = session.id;
   const components: ActionRow[] =
@@ -188,7 +193,7 @@ export function lobbyMessage(
   return {
     content: lines.join("\n"),
     components,
-    allowed_mentions: { users: discordIdsOf(ctx, freeNow) },
+    allowed_mentions: { users: active ? discordIdsOf(ctx, freeNow) : [] },
   };
 }
 

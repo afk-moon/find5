@@ -156,6 +156,7 @@ async function seedSession(
 
 export async function seedDemo(db: DB) {
   await db.insert(groups).values({ id: DEMO_GROUP_ID, name: "Valorant Squad", homeTimezone: HOME_ZONE });
+  const seededAt = Date.now() - 60_000;
 
   for (const [i, m] of DEMO_MEMBERS.entries()) {
     await db.insert(user).values({ id: m.id, name: m.name, email: `${m.id}@demo.receptionist.local` });
@@ -166,7 +167,12 @@ export async function seedDemo(db: DB) {
       workStyle: m.hybrid ? "hybrid" : "fixed",
       nightBeforeWfhUntil: m.nightBeforeWfhUntil ?? null,
     });
-    await db.insert(memberships).values({ groupId: DEMO_GROUP_ID, userId: m.id, role: i === 0 ? "owner" : "member" });
+    // Explicit, increasing join times keep the members in this order (inserts in the same millisecond
+    // would tie and sort by name), and before anyone who joins later.
+    const joinedAt = new Date(seededAt + i * 1000);
+    await db
+      .insert(memberships)
+      .values({ groupId: DEMO_GROUP_ID, userId: m.id, role: i === 0 ? "owner" : "member", joinedAt });
 
     const rows = Object.entries(m.weekly).map(([d, cells]) => ({ userId: m.id, key: `w${d}`, cells }));
     if (m.wfh) rows.push({ userId: m.id, key: "wfh", cells: m.wfh });

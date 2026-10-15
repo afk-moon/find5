@@ -207,7 +207,9 @@ async function onButton(i: Interaction, ctx: GroupContext, me: MemberView, defer
       const ref = `${i.message.channel_id}:${i.message.id}`;
       defer(() => getDb().then((db) => db.update(playSessions).set({ discordMessageId: ref }).where(eq(playSessions.id, sessionId))));
     }
-    return update(lobbyMessage(ctx, fresh.session, summary));
+    // Keep "Free right now": whoever's free by their schedule and still hasn't answered.
+    const freeNow = freeNowNotInLobby(ctx, fresh.players.map((p) => p.userId));
+    return update(lobbyMessage(ctx, fresh.session, summary, freeNow));
   }
 
   if (kind === "wfh") {
