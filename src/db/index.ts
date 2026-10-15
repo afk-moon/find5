@@ -4,6 +4,7 @@ import { sql } from "drizzle-orm";
 import type { PgliteDatabase } from "drizzle-orm/pglite";
 import * as schema from "./schema";
 import { seedDemo } from "./seed";
+import { postgresJsUrl } from "./url";
 
 /**
  * Both drivers expose the same Drizzle query API; we type everything as the PGlite flavor.
@@ -32,10 +33,16 @@ async function init(): Promise<DB> {
     const { drizzle } = await import("drizzle-orm/postgres-js");
     const { migrate } = await import("drizzle-orm/postgres-js/migrator");
     const { default: postgres } = await import("postgres");
-    const pg = drizzle(postgres(process.env.DATABASE_URL, { prepare: false }), { schema });
+    const pg = drizzle(postgres(postgresJsUrl(process.env.DATABASE_URL), { prepare: false }), { schema });
     await migrate(pg, { migrationsFolder });
     db = pg as unknown as DB;
   } else {
+    if (process.env.VERCEL && process.env.NODE_ENV === "production") {
+      // Vercel's filesystem is read-only, so the embedded database can't work there.
+      throw new Error(
+        "DATABASE_URL is not set. In Vercel, connect a Postgres database to this project (Storage tab), then redeploy.",
+      );
+    }
     const { PGlite } = await import("@electric-sql/pglite");
     const { drizzle } = await import("drizzle-orm/pglite");
     const { migrate } = await import("drizzle-orm/pglite/migrator");

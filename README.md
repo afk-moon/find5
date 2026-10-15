@@ -259,18 +259,39 @@ session starts: the post shows only the counts, and the person who tapped gets a
 
 ## Deploying
 
-This works on any Node host. With Vercel plus a hosted Postgres (Supabase, Neon, …):
+This works on any Node host with a Postgres database. On Vercel with Neon:
 
-1. Import the GitHub repo in Vercel.
-2. Set environment variables: `DATABASE_URL` (your Postgres connection string), `APP_URL` (your site's
-   URL), `AUTH_SECRET`, `CRON_SECRET`, and the Discord variables above.
-3. Deploy. Migrations in `drizzle/` run automatically on the first request. Set `SEED_DEMO=1` once if
-   you want the demo friends in the hosted database.
+1. **Import the repo:** in Vercel, **Add New → Project** → pick `find5`.
+2. **Add the database:** in the project, open **Storage → Create Database → Neon**, then **Connect**
+   it to the project (at least **Production**). This adds `DATABASE_URL` (plus a few `PG*`/`POSTGRES_*`
+   variables the app ignores) to the project for you, so there's nothing to copy. The `.env.local` tab
+   on the database page is only for pointing your own computer at this database. Skip it: your local
+   app uses its built-in database, and the hosted one holds your group's real data.
+3. **Add the other variables** in **Settings → Environment Variables**:
+
+   | Variable | Value |
+   |---|---|
+   | `APP_URL` | Your site's address, e.g. `https://find5.vercel.app` (no trailing slash) |
+   | `AUTH_SECRET` | Any long random string, e.g. from `node -e "console.log(crypto.randomUUID()+crypto.randomUUID())"` |
+   | `CRON_SECRET` | Another random string (protects the daily job) |
+   | Discord variables | Only if you use Discord (see [Discord setup](#discord-setup)) |
+   | `SEED_DEMO` | `1` only if you want the demo friends in the hosted database |
+   | `ALLOW_DEV_LOGIN` | `1` only to test without Discord login. Anyone with the link can then sign in as anyone |
+
+4. **Redeploy:** **Deployments → ⋯ → Redeploy**. Variable changes only apply to new deployments. The
+   database tables are created automatically on the first visit.
+
+How people log in: with Discord login set up, each friend clicks **Log in with Discord** and joins the
+group automatically. The first person creates it. Without Discord, set `ALLOW_DEV_LOGIN=1` and use
+“join as a new member” on the login page.
+
+If a page shows an error, open the deployment's **Logs** in Vercel. “DATABASE_URL is not set” means the
+database isn't connected to that environment yet (step 2), or the project wasn't redeployed after
+connecting it.
 
 `vercel.json` runs `/api/cron/daily` once a day. It opens next week's WFH vote on the group's “open”
 weekday (Thu by default) and decides it on the “close” weekday (Fri). It also updates the Discord posts of
-late checks that have closed, showing who was late and removing the buttons. Demo login is off in
-production unless `ALLOW_DEV_LOGIN=1`.
+late checks that have closed, showing who was late and removing the buttons.
 
 ---
 
