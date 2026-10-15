@@ -51,7 +51,8 @@ body {
     @apply text-[11px] font-semibold tracking-wider text-muted uppercase;
   }
   .input {
-    @apply rounded-md border border-line bg-ink-2 px-2.5 py-1.5 text-sm text-bone focus:border-val focus:outline-none;
+    /* 16px on phones: iOS Safari zooms in when focusing smaller text. */
+    @apply rounded-md border border-line bg-ink-2 px-2.5 py-1.5 text-base text-bone focus:border-val focus:outline-none sm:text-sm;
   }
   .h1 {
     @apply text-2xl font-bold tracking-tight;

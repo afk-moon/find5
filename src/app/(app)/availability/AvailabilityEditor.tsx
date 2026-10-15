@@ -51,7 +51,7 @@ function PaintGrid({ columns, brush, onPaint }: { columns: Column[]; brush: Stat
   };
   return (
     <div
-      className="touch-none select-none"
+      className="select-none"
       onPointerDown={(e) => {
         const hit = hitTest(e.clientX, e.clientY);
         if (!hit) return;
@@ -85,7 +85,7 @@ function PaintGrid({ columns, brush, onPaint }: { columns: Column[]; brush: Stat
                 data-cell=""
                 data-col={c.key}
                 data-idx={idx}
-                className={`h-[14px] cursor-crosshair border-l-2 border-ink ${idx % 2 === 0 ? "border-t border-t-line/70" : ""} ${CELL_BG[(c.cells[idx] as State) ?? "."]}`}
+                className={`h-[14px] cursor-crosshair touch-none border-l-2 border-ink ${idx % 2 === 0 ? "border-t border-t-line/70" : ""} ${CELL_BG[(c.cells[idx] as State) ?? "."]}`}
               />
             ))}
           </Fragment>

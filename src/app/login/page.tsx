@@ -92,7 +92,7 @@ export default async function LoginPage({ searchParams }: { searchParams: Promis
           </div>
           <form action={joinAsNewMemberAction} className="card space-y-3">
             <div className="label">Or join as a new member</div>
-            <div className="flex gap-2">
+            <div className="flex flex-col gap-2 sm:flex-row">
               <input name="name" placeholder="Your name" className="input flex-1" maxLength={40} />
               <ZonePicker name="timezone" />
             </div>
