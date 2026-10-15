@@ -202,20 +202,24 @@ export function partyFullMessage(ctx: GroupContext, summary: LiveSummary): Disco
 /** Private reply to "/back <time>". Times are shown in their profile's zone, the zone the time was read in. */
 export function awayMessage(away: AwayResult, zone: string, url: string): string {
   const z = zoneAbbr(zone, away.backMs);
-  const day = away.laterDay ? `${fmtWeekdayLong(away.freeFromMs, zone)} ` : "";
-  const lines = away.now
-    ? [`✅ Welcome back! You're marked free from now until ${fmtTime(away.freeUntilMs, zone)} ${z}.`]
-    : [
-        `👋 Away until **${fmtTime(away.backMs, zone)} ${z}** (${discordTs(away.backMs, "R")}). ` +
-          `You're marked busy until then, and free ${day}${fmtRange(away.freeFromMs, away.freeUntilMs, zone)} ${z}.`,
-      ];
+  const { plan } = away;
+  const lines: string[] = [];
+  if (away.now) {
+    lines.push(plan ? `✅ Welcome back! You're marked free from now until ${fmtTime(plan.freeUntilMs, zone)} ${z}.` : "✅ Welcome back!");
+  } else if (plan) {
+    const day = plan.laterDay ? `${fmtWeekdayLong(plan.freeFromMs, zone)} ` : "";
+    lines.push(
+      `👋 Away until **${fmtTime(away.backMs, zone)} ${z}** (${discordTs(away.backMs, "R")}). ` +
+        `You're marked busy until then, and free ${day}${fmtRange(plan.freeFromMs, plan.freeUntilMs, zone)} ${z}.`,
+    );
+  }
   if (away.lobby) lines.push(away.now ? "🎮 You're in the lobby." : "⏳ The lobby shows when you'll be back.");
   if (away.clashMs !== null) {
     lines.push(
       `⚠️ Heads up: you're locked in for ${fmtTime(away.clashMs, zone)} ${z} (${discordTs(away.clashMs, "R")}), before you're back. Let the party know.`,
     );
   }
-  lines.push(`Change or undo it: <${url}/availability> → Specific days`);
+  if (plan?.overrides.length) lines.push(`Change or undo it: <${url}/availability> → Specific days`);
   return lines.join("\n");
 }
 

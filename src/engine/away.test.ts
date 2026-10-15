@@ -43,6 +43,20 @@ describe("reading a typed time", () => {
     ]);
   });
 
+  it("reads digits-only times like 930", () => {
+    expect(parseClockTime("930")).toEqual([
+      { hour: 9, minute: 30 },
+      { hour: 21, minute: 30 },
+    ]);
+    expect(parseClockTime("1030")).toEqual([
+      { hour: 10, minute: 30 },
+      { hour: 22, minute: 30 },
+    ]);
+    expect(parseClockTime("9.30")).toEqual(parseClockTime("930"));
+    expect(parseClockTime("2130")).toEqual([{ hour: 21, minute: 30 }]);
+    expect(parseClockTime("0930")).toEqual([{ hour: 9, minute: 30 }]);
+  });
+
   it("rejects things that aren't times", () => {
     for (const bad of ["", "soon", "25:00", "9:75", "13pm", "0am", "9:5"]) expect(parseClockTime(bad)).toBeNull();
   });
@@ -51,6 +65,7 @@ describe("reading a typed time", () => {
 describe("when a time comes round next", () => {
   it("picks the next one tonight, after midnight included", () => {
     expect(next("9", "2026-10-15T18:10")).toBe(at("2026-10-15T21:00"));
+    expect(next("930", "2026-10-15T15:10")).toBe(at("2026-10-15T21:30"));
     expect(next("1am", "2026-10-15T18:10")).toBe(at("2026-10-16T01:00"));
   });
 

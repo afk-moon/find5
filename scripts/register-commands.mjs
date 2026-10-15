@@ -32,13 +32,14 @@ const commands = [
   },
   {
     name: "back",
-    description: "Back from dinner, or add a time (e.g. 9pm) to say you're away until then",
+    description: "When you'll be back: /back 930, /back 9pm, or /back now",
     options: [
       {
+        // Required, so Discord jumps straight into it: type /back, then 930.
         type: STRING,
-        name: "time",
-        description: "When you'll be back, e.g. 9pm, 9:30pm, 21:30 or now (in your profile's time zone)",
-        required: false,
+        name: "at",
+        description: "930, 9pm, 21:30, or now (read in your profile's time zone)",
+        required: true,
         max_length: 20,
       },
     ],

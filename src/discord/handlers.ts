@@ -130,8 +130,9 @@ async function onCommand(i: Interaction, ctx: GroupContext, me: MemberView, defe
 
     case "dinner":
     case "back": {
-      // "/back time:9pm": away until then. Changes their availability, so it works without a lobby too.
-      const time = i.data?.name === "back" ? String(option("time") ?? "").trim() : "";
+      // "/back 930": away until then. Changes their availability, so it works without a lobby too.
+      // ("time" is the option's old name, from before it became the required "at".)
+      const time = i.data?.name === "back" ? String(option("at") ?? option("time") ?? "").trim() : "";
       if (time) {
         const away = await setAwayUntil(ctx, me.id, time);
         const lobby = away.lobby;
@@ -142,7 +143,7 @@ async function onCommand(i: Interaction, ctx: GroupContext, me: MemberView, defe
       if (!live) {
         return ephemeral(
           i.data?.name === "back"
-            ? "No lobby is open. Start one with /lfg, or say when you'll be free with /back time:9pm."
+            ? "No lobby is open. Start one with /lfg, or say when you'll be free with /back 9pm."
             : "No lobby is open. Start one with /lfg.",
         );
       }

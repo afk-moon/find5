@@ -252,13 +252,14 @@ Commands:
 - `/windows`: best times this week
 - `/lfg`: open a lobby
 - `/dinner quick|long`
-- `/back`: back from dinner (in the open lobby)
-- `/back time:9pm`: you're away until then. Your availability for today changes to busy until 9pm and
-  free from 9pm, so windows and pings use it right away. The time is read in your profile's time zone
-  (`9pm`, `9:30pm`, `21:30`, `noon`, or `now` to mark yourself free now). From 9pm you're free until the
-  end of what you'd already planned that evening, or until midnight (at least 2 hours) if you hadn't
-  planned anything. If a lobby is open, it shows when you'll be back. It's saved as a one-off day, so you
-  can see or undo it under **My availability → Specific days**.
+- `/back 930` (or `9pm`, `21:30`, `noon`): you're away until then. Your availability for today changes to
+  busy until then and free from then, so windows and pings use it right away. The time is read in your
+  profile's time zone, and a bare `930` means whichever 9:30 comes next. You're free until the end of what
+  you'd already planned that evening, or until midnight (at least 2 hours) if you hadn't planned anything.
+  If a lobby is open, it shows when you'll be back. It's saved as a one-off day, so you can see or undo it
+  under **My availability → Specific days**. Discord shows it as `/back at: 930`; just type `/back`, then
+  the time.
+- `/back now`: back from dinner (puts you in the open lobby), or free from now if your schedule said busy
 - `/wfh [this|next]`: post the WFH vote
 
 After changing commands (for example, after updating the app), run `npm run discord:register` again.

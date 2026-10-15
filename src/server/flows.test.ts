@@ -283,11 +283,12 @@ describe("/back with a time", () => {
   it("reads the time in the member's zone and explains what it can't use", () => {
     const now = at("2031-03-04T18:10");
     expect(resolveBackTime("9", now, zone())).toEqual({ backMs: at("2031-03-04T21:00"), now: false });
+    expect(resolveBackTime("930", now, zone())).toEqual({ backMs: at("2031-03-04T21:30"), now: false });
     expect(resolveBackTime("now", now, zone())).toEqual({ backMs: at("2031-03-04T18:00"), now: true });
+    expect(resolveBackTime("now", at("2031-03-04T06:00"), zone())).toEqual({ backMs: at("2031-03-04T06:00"), now: true });
     expect(() => resolveBackTime("banana", now, zone())).toThrow(/couldn't read/);
-    expect(() => resolveBackTime("5pm", now, zone())).toThrow(/already passed/);
+    expect(() => resolveBackTime("5pm", now, zone())).toThrow(/already passed\. If you're back now, use \/back now/);
     expect(() => resolveBackTime("6am", now, zone())).toThrow(/between 8am and 4am/);
-    expect(() => resolveBackTime("now", at("2031-03-04T06:00"), zone())).toThrow(/between 4am and 8am/);
   });
 
   it("saves busy-until-then, free-from-then as a one-off day and warns about a locked-in session", async () => {
@@ -342,6 +343,11 @@ describe("/back with a time", () => {
       expect(awayMessage(back, zone(), "http://localhost:3000")).toContain("You're in the lobby");
       s = (await getSession(ctx.group.id, lobby.id))!;
       expect(summarizeLive(5, s.players).playing).toEqual(["demo-rosa"]);
+
+      // 4–8am is outside every gaming day, so "now" only touches the lobby.
+      const early = await setAwayUntil(ctx, "demo-rosa", "now", at("2031-03-05T05:00"));
+      expect(early.plan).toBeNull();
+      expect(awayMessage(early, zone(), "http://localhost:3000")).toBe("✅ Welcome back!\n🎮 You're in the lobby.");
     } finally {
       await endSession(ctx, lobby.id);
     }
@@ -350,7 +356,7 @@ describe("/back with a time", () => {
   it("answers /back in Discord", async () => {
     const db = await getDb();
     await db.update(memberProfiles).set({ discordId: "1001" }).where(eq(memberProfiles.userId, "demo-kai"));
-    const back = async (time?: string) => {
+    const back = async (value?: string, name = "at") => {
       const res = await handleInteraction(
         {
           id: "1",
@@ -359,7 +365,7 @@ describe("/back with a time", () => {
           token: "token",
           channel_id: "chan",
           member: { user: { id: "1001", username: "kai" } },
-          data: { name: "back", options: time === undefined ? [] : [{ name: "time", value: time }] },
+          data: { name: "back", options: value === undefined ? [] : [{ name, value }] },
         },
         () => {},
       );
@@ -368,6 +374,7 @@ describe("/back with a time", () => {
     };
     expect(await back("banana")).toMatch(/couldn't read “banana”/);
     expect(await back("4:30am")).toMatch(/between 8am and 4am/);
-    expect(await back()).toMatch(/\/back time:9pm/); // no lobby is open
+    expect(await back("4:30am", "time")).toMatch(/between 8am and 4am/); // the option's old name still works
+    expect(await back()).toMatch(/\/back 9pm/); // old /back with no time, and no lobby open
   });
 });
