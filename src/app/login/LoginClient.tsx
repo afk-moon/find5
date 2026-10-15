@@ -7,7 +7,11 @@ export function DiscordLoginButton({ enabled }: { enabled: boolean }) {
   const zone = useBrowserZone();
   if (!enabled) {
     return (
-      <button disabled className="btn btn-secondary w-full" title="Add DISCORD_CLIENT_ID and DISCORD_CLIENT_SECRET to .env.local">
+      <button
+        disabled
+        className="btn btn-secondary w-full"
+        title="Set DISCORD_APPLICATION_ID and DISCORD_CLIENT_SECRET (in .env.local, or in Vercel's environment variables). See Discord setup in the README."
+      >
         Log in with Discord (not configured yet)
       </button>
     );

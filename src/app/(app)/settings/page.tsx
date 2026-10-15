@@ -118,7 +118,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
         </div>
         <div className="card space-y-2 text-sm">
           <div className="label">Integrations</div>
-          <Status ok={discordLoginConfigured()} label="Log in with Discord" fix="DISCORD_CLIENT_ID + DISCORD_CLIENT_SECRET" />
+          <Status ok={discordLoginConfigured()} label="Log in with Discord" fix="DISCORD_APPLICATION_ID + DISCORD_CLIENT_SECRET" />
           <Status ok={botConfigured()} label="Discord bot" fix="DISCORD_BOT_TOKEN + DISCORD_PUBLIC_KEY" />
           <Status ok={!!g.discordChannelId} label="Announcement channel" fix="set a channel ID, or run /lfg in Discord" />
           <div className="pt-2 text-xs text-muted">
