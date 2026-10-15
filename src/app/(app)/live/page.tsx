@@ -4,16 +4,16 @@ import { Avatar } from "@/components/Avatar";
 import { AutoRefresh } from "@/components/client";
 import { MemberName } from "@/components/LateTag";
 import { fmtRelative, fmtTime, zoneAbbr } from "@/lib/format";
-import { requestTime, requireViewer, type MemberView } from "@/server/context";
+import { requestTime, requireMember, requireViewer, type MemberView } from "@/server/context";
 import { activeLive, summarizeLive } from "@/server/sessions";
 import { membersNow, type MemberNow } from "@/server/windows";
 
 export default async function LivePage() {
-  const { me, ctx } = await requireViewer();
+  const { groupId } = await requireMember();
   const now = requestTime();
+  const [{ me, ctx }, live] = await Promise.all([requireViewer(), activeLive(groupId, now)]);
   const zone = me.timezone;
   const P = ctx.group.partySize;
-  const live = await activeLive(ctx.group.id, now);
   const status = membersNow(ctx, now);
   const statusOf = new Map(status.map((s) => [s.member.id, s]));
 

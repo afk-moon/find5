@@ -21,24 +21,20 @@ const isPlaying = (status: string) => status !== "declined" && status !== "left"
 /** Locked-in sessions that have started (newest first), with their players and late reports. */
 export async function loadLateRecords(groupId: string, nowMs = Date.now(), limit = 200): Promise<LateRecord[]> {
   const db = await getDb();
-  const sessions = await db
-    .select()
-    .from(playSessions)
-    .where(
-      and(
-        eq(playSessions.groupId, groupId),
-        eq(playSessions.kind, "planned"),
-        ne(playSessions.status, "cancelled"),
-        lte(playSessions.startAt, new Date(nowMs)),
-      ),
-    )
-    .orderBy(desc(playSessions.startAt))
-    .limit(limit);
-  if (!sessions.length) return [];
-  const ids = sessions.map((s) => s.id);
-  const [players, reports] = await Promise.all([
-    db.select().from(playSessionPlayers).where(inArray(playSessionPlayers.sessionId, ids)),
-    db.select().from(lateReports).where(inArray(lateReports.sessionId, ids)),
+  const started = () =>
+    and(
+      eq(playSessions.groupId, groupId),
+      eq(playSessions.kind, "planned"),
+      ne(playSessions.status, "cancelled"),
+      lte(playSessions.startAt, new Date(nowMs)),
+    );
+  // One parallel round trip: players and reports pick their sessions with the same subquery.
+  const sessionIds = () =>
+    db.select({ id: playSessions.id }).from(playSessions).where(started()).orderBy(desc(playSessions.startAt)).limit(limit);
+  const [sessions, players, reports] = await Promise.all([
+    db.select().from(playSessions).where(started()).orderBy(desc(playSessions.startAt)).limit(limit),
+    db.select().from(playSessionPlayers).where(inArray(playSessionPlayers.sessionId, sessionIds())),
+    db.select().from(lateReports).where(inArray(lateReports.sessionId, sessionIds())),
   ]);
   return sessions.map((s) => ({
     sessionId: s.id,

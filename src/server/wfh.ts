@@ -45,8 +45,17 @@ export interface WfhState {
 }
 
 export async function getWfhState(ctx: GroupContext, weekStart: string): Promise<WfhState> {
-  const vote = await getVote(ctx.group.id, weekStart);
-  const ballots = vote ? await getBallots(vote.id) : {};
+  const db = await getDb();
+  const thisVote = () =>
+    db
+      .select({ id: wfhVotes.id })
+      .from(wfhVotes)
+      .where(and(eq(wfhVotes.groupId, ctx.group.id), eq(wfhVotes.weekStart, weekStart)));
+  const [vote, ballotRows] = await Promise.all([
+    getVote(ctx.group.id, weekStart),
+    db.select().from(wfhBallots).where(inArray(wfhBallots.voteId, thisVote())),
+  ]);
+  const ballots: Record<string, Weekday[]> = Object.fromEntries(ballotRows.map((r) => [r.userId, r.days as Weekday[]]));
   const args = {
     members: ctx.inputs,
     settings: ctx.settings,

@@ -1,5 +1,6 @@
 import { asc, eq, inArray } from "drizzle-orm";
 import { redirect } from "next/navigation";
+import { cache } from "react";
 import { getDb } from "@/db";
 import { dayPatterns, groups, hybridDays, memberProfiles, memberships, user, wfhDays } from "@/db/schema";
 import { NO_LATE_STATS, lateStats, type LateStats } from "@/engine/lateness";
@@ -55,35 +56,34 @@ export function settingsOf(group: Group): MatchSettings {
 
 export async function loadGroupContext(groupId: string): Promise<GroupContext> {
   const db = await getDb();
-  const [group] = await db.select().from(groups).where(eq(groups.id, groupId));
-  if (!group) throw new Error(`Group ${groupId} not found`);
-
-  const rows = await db
-    .select({
-      id: user.id,
-      name: user.name,
-      image: user.image,
-      role: memberships.role,
-      timezone: memberProfiles.timezone,
-      workStyle: memberProfiles.workStyle,
-      color: memberProfiles.color,
-      discordId: memberProfiles.discordId,
-      nightBeforeWfhUntil: memberProfiles.nightBeforeWfhUntil,
-    })
-    .from(memberships)
-    .innerJoin(user, eq(user.id, memberships.userId))
-    .leftJoin(memberProfiles, eq(memberProfiles.userId, memberships.userId))
-    .where(eq(memberships.groupId, groupId))
-    .orderBy(asc(memberships.joinedAt), asc(user.name));
-
-  const ids = rows.map((r) => r.id);
   const now = Date.now();
-  const [patternRows, hybridRows, wfhRows, lateRecords] = await Promise.all([
-    ids.length ? db.select().from(dayPatterns).where(inArray(dayPatterns.userId, ids)) : [],
-    ids.length ? db.select().from(hybridDays).where(inArray(hybridDays.userId, ids)) : [],
-    ids.length ? db.select().from(wfhDays).where(inArray(wfhDays.userId, ids)) : [],
+  // Everything in one parallel round trip: per-member tables filter by the group's members via a subquery.
+  const memberIds = () => db.select({ id: memberships.userId }).from(memberships).where(eq(memberships.groupId, groupId));
+  const [[group], rows, patternRows, hybridRows, wfhRows, lateRecords] = await Promise.all([
+    db.select().from(groups).where(eq(groups.id, groupId)),
+    db
+      .select({
+        id: user.id,
+        name: user.name,
+        image: user.image,
+        role: memberships.role,
+        timezone: memberProfiles.timezone,
+        workStyle: memberProfiles.workStyle,
+        color: memberProfiles.color,
+        discordId: memberProfiles.discordId,
+        nightBeforeWfhUntil: memberProfiles.nightBeforeWfhUntil,
+      })
+      .from(memberships)
+      .innerJoin(user, eq(user.id, memberships.userId))
+      .leftJoin(memberProfiles, eq(memberProfiles.userId, memberships.userId))
+      .where(eq(memberships.groupId, groupId))
+      .orderBy(asc(memberships.joinedAt), asc(user.name)),
+    db.select().from(dayPatterns).where(inArray(dayPatterns.userId, memberIds())),
+    db.select().from(hybridDays).where(inArray(hybridDays.userId, memberIds())),
+    db.select().from(wfhDays).where(inArray(wfhDays.userId, memberIds())),
     loadLateRecords(groupId, now),
   ]);
+  if (!group) throw new Error(`Group ${groupId} not found`);
   const late = lateStats(lateRecords, now);
 
   const members: MemberView[] = rows.map((r, i) => {
@@ -144,8 +144,11 @@ export interface Viewer {
   ctx: GroupContext;
 }
 
-/** The signed-in member and their group. Redirects to /login when there isn't one. */
-export async function requireViewer(): Promise<Viewer> {
+/**
+ * The signed-in user's id and group id: one quick lookup, so pages can start their own queries in
+ * parallel with requireViewer(). Redirects to /login when there isn't one. Cached per request.
+ */
+export const requireMember = cache(async (): Promise<{ userId: string; groupId: string }> => {
   const userId = await getSessionUserId();
   if (!userId) redirect("/login");
   const db = await getDb();
@@ -156,8 +159,17 @@ export async function requireViewer(): Promise<Viewer> {
     .orderBy(asc(memberships.joinedAt))
     .limit(1);
   if (!membership) redirect("/login?stale=1");
-  const ctx = await loadGroupContext(membership.groupId);
+  return { userId, groupId: membership.groupId };
+});
+
+/**
+ * The signed-in member and their group. Redirects to /login when there isn't one. Cached per request,
+ * so the layout and the page share one load.
+ */
+export const requireViewer = cache(async (): Promise<Viewer> => {
+  const { userId, groupId } = await requireMember();
+  const ctx = await loadGroupContext(groupId);
   const me = ctx.byId.get(userId);
   if (!me) redirect("/login?stale=1");
   return { userId, me, ctx };
-}
+});

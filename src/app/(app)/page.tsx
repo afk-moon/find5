@@ -7,18 +7,18 @@ import { LateCheck } from "@/components/LateCheck";
 import { MemberName } from "@/components/LateTag";
 import { SessionPlan, TimelineBar, WindowCard } from "@/components/WindowCard";
 import { fmtDay, fmtDuration, fmtRange, fmtTime, zoneAbbr } from "@/lib/format";
-import { requestTime, requireViewer, type GroupContext } from "@/server/context";
+import { requestTime, requireMember, requireViewer, type GroupContext } from "@/server/context";
 import { openLateVotes } from "@/server/lateness";
 import { upcomingPlanned } from "@/server/sessions";
 import { membersNow, upcomingWindows, weekHeat, type MemberNow } from "@/server/windows";
 
 export default async function WindowsPage() {
-  const { me, ctx } = await requireViewer();
+  const { groupId } = await requireMember();
   const now = requestTime();
+  const [{ me, ctx }, planned] = await Promise.all([requireViewer(), upcomingPlanned(groupId, now)]);
   const zone = me.timezone;
   const P = ctx.group.partySize;
   const windows = upcomingWindows(ctx, now);
-  const planned = await upcomingPlanned(ctx.group.id, now);
   const locked = new Set(planned.map((p) => p.session.startAt.getTime()));
   // Open late checks. Sessions still in progress show theirs on their "Locked in" card; finished ones get their own card.
   const lateChecks = new Map(openLateVotes(ctx, me.id, now).map((t) => [t.sessionId, t]));

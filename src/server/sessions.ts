@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, type SQL } from "drizzle-orm";
 import { getDb } from "@/db";
 import { playSessionPlayers, playSessions, type PlayerStatus, type SessionPlan } from "@/db/schema";
 import type { PlayWindow } from "@/engine";
@@ -16,23 +16,32 @@ export interface SessionWithPlayers {
 export const LONG_DINNER_MINUTES = 90;
 const LIVE_MAX_AGE_MS = 12 * 3_600_000;
 
-async function withPlayers(rows: PlaySession[]): Promise<SessionWithPlayers[]> {
-  if (!rows.length) return [];
+/** Sessions matching `where` (by start time) and their players, fetched side by side in one round trip. */
+async function findWithPlayers(
+  where: () => SQL | undefined,
+  order: "asc" | "desc",
+  limit: number,
+): Promise<SessionWithPlayers[]> {
   const db = await getDb();
-  const players = await db
-    .select()
-    .from(playSessionPlayers)
-    .where(inArray(playSessionPlayers.sessionId, rows.map((r) => r.id)));
+  const byStart = () => (order === "asc" ? asc(playSessions.startAt) : desc(playSessions.startAt));
+  const ids = db.select({ id: playSessions.id }).from(playSessions).where(where()).orderBy(byStart()).limit(limit);
+  const [rows, players] = await Promise.all([
+    db.select().from(playSessions).where(where()).orderBy(byStart()).limit(limit),
+    db.select().from(playSessionPlayers).where(inArray(playSessionPlayers.sessionId, ids)),
+  ]);
   return rows.map((session) => ({ session, players: players.filter((p) => p.sessionId === session.id) }));
 }
 
 export async function getSession(groupId: string, sessionId: string): Promise<SessionWithPlayers | null> {
   const db = await getDb();
-  const [row] = await db
-    .select()
-    .from(playSessions)
-    .where(and(eq(playSessions.id, sessionId), eq(playSessions.groupId, groupId)));
-  return row ? (await withPlayers([row]))[0] : null;
+  const [[session], players] = await Promise.all([
+    db
+      .select()
+      .from(playSessions)
+      .where(and(eq(playSessions.id, sessionId), eq(playSessions.groupId, groupId))),
+    db.select().from(playSessionPlayers).where(eq(playSessionPlayers.sessionId, sessionId)),
+  ]);
+  return session ? { session, players } : null;
 }
 
 export function planFromWindow(w: PlayWindow): SessionPlan {
@@ -80,21 +89,18 @@ export async function lockInWindow(ctx: GroupContext, userId: string, startMs: n
   return { session, window, created: true };
 }
 
-export async function upcomingPlanned(groupId: string, nowMs = Date.now()): Promise<SessionWithPlayers[]> {
-  const db = await getDb();
-  const rows = await db
-    .select()
-    .from(playSessions)
-    .where(
+export function upcomingPlanned(groupId: string, nowMs = Date.now()): Promise<SessionWithPlayers[]> {
+  return findWithPlayers(
+    () =>
       and(
         eq(playSessions.groupId, groupId),
         eq(playSessions.kind, "planned"),
         eq(playSessions.status, "active"),
         gt(playSessions.endAt, new Date(nowMs)),
       ),
-    )
-    .orderBy(asc(playSessions.startAt));
-  return withPlayers(rows);
+    "asc",
+    100,
+  );
 }
 
 export async function cancelSession(groupId: string, sessionId: string, nowMs = Date.now()) {
@@ -112,21 +118,18 @@ export async function cancelSession(groupId: string, sessionId: string, nowMs = 
 // ─── Live (spontaneous) sessions ───────────────────────────────────────────────────────────
 
 export async function activeLive(groupId: string, nowMs = Date.now()): Promise<SessionWithPlayers | null> {
-  const db = await getDb();
-  const [row] = await db
-    .select()
-    .from(playSessions)
-    .where(
+  const [live] = await findWithPlayers(
+    () =>
       and(
         eq(playSessions.groupId, groupId),
         eq(playSessions.kind, "live"),
         eq(playSessions.status, "active"),
         gt(playSessions.startAt, new Date(nowMs - LIVE_MAX_AGE_MS)),
       ),
-    )
-    .orderBy(desc(playSessions.startAt))
-    .limit(1);
-  return row ? (await withPlayers([row]))[0] : null;
+    "desc",
+    1,
+  );
+  return live ?? null;
 }
 
 /** Open a lobby (or join the one that's already open). */
