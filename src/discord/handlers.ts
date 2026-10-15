@@ -3,6 +3,7 @@ import { getDb } from "@/db";
 import { groups, playSessions, wfhVotes } from "@/db/schema";
 import type { Weekday } from "@/engine";
 import { discordTs } from "@/lib/format";
+import { setAwayUntil } from "@/server/away";
 import { loadGroupContext, type GroupContext, type MemberView } from "@/server/context";
 import { getLateTally, toggleLateReport } from "@/server/lateness";
 import { freeNowNotInLobby, syncLobby } from "@/server/notify";
@@ -16,7 +17,14 @@ import {
 } from "@/server/sessions";
 import { clearBallot, ensureVote, getWfhState, toggleBallotDay, weekStartOf } from "@/server/wfh";
 import { upcomingWindows } from "@/server/windows";
-import { lobbyMessage, partyFullMessage, storedPlannedMessage, windowsMessage, wfhVoteMessage } from "./messages";
+import {
+  awayMessage,
+  lobbyMessage,
+  partyFullMessage,
+  storedPlannedMessage,
+  windowsMessage,
+  wfhVoteMessage,
+} from "./messages";
 import { appUrl, postFollowup, type DiscordMessage } from "./rest";
 
 interface DiscordUser {
@@ -122,8 +130,22 @@ async function onCommand(i: Interaction, ctx: GroupContext, me: MemberView, defe
 
     case "dinner":
     case "back": {
+      // "/back time:9pm": away until then. Changes their availability, so it works without a lobby too.
+      const time = i.data?.name === "back" ? String(option("time") ?? "").trim() : "";
+      if (time) {
+        const away = await setAwayUntil(ctx, me.id, time);
+        const lobby = away.lobby;
+        if (lobby) defer(() => syncLobby(ctx, lobby.sessionId, lobby.before));
+        return ephemeral(awayMessage(away, me.timezone, appUrl()));
+      }
       const live = await activeLive(ctx.group.id);
-      if (!live) return ephemeral("No lobby is open. Start one with /lfg.");
+      if (!live) {
+        return ephemeral(
+          i.data?.name === "back"
+            ? "No lobby is open. Start one with /lfg, or say when you'll be free with /back time:9pm."
+            : "No lobby is open. Start one with /lfg.",
+        );
+      }
       const before = summarizeLive(ctx.group.partySize, live.players).state;
       const kind = option("kind") === "long" ? "long" : "quick";
       if (i.data?.name === "dinner") await goToDinner(ctx, live.session.id, me.id, kind);

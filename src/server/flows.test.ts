@@ -13,11 +13,12 @@ const { lockInWindow, upcomingPlanned, startLive, setPlayerStatus, goToDinner, g
 const { getWfhState, toggleBallotDay, closeVote, reopenVote, weekStartOf } = await import("./wfh");
 const { saveProfile, saveDateOverride, createMember, saveWfhWeek } = await import("./availability");
 const { openLateVotes, toggleLateReport, getLateTally } = await import("./lateness");
-const { lobbyMessage, wfhVoteMessage, plannedSessionMessage, windowsMessage, storedPlannedMessage, mention } =
+const { setAwayUntil, resolveBackTime } = await import("./away");
+const { lobbyMessage, wfhVoteMessage, plannedSessionMessage, windowsMessage, storedPlannedMessage, mention, awayMessage } =
   await import("@/discord/messages");
 const { handleInteraction } = await import("@/discord/handlers");
 const { getDb } = await import("@/db");
-const { memberProfiles } = await import("@/db/schema");
+const { memberProfiles, playSessions, playSessionPlayers } = await import("@/db/schema");
 const { DEMO_GROUP_ID } = await import("@/db/seed");
 const { pattern, lateVotingState, resolvePattern } = await import("@/engine");
 const { eq } = await import("drizzle-orm");
@@ -271,5 +272,102 @@ describe("WFH patterns per weekday", () => {
     // ...while a WFH Thursday still uses the shared WFH pattern from before.
     const thursday = DateTime.fromISO(nextFriday).minus({ days: 1 }).toISODate()!;
     expect(resolvePattern({ ...kai, wfhDates: new Set([thursday]) }, thursday)).toBe(kai.wfhPattern);
+  });
+});
+
+describe("/back with a time", () => {
+  // A fixed evening years ahead, in Rosa's zone, so nothing depends on when the tests run.
+  const zone = () => ctx.byId.get("demo-rosa")!.timezone;
+  const at = (iso: string) => DateTime.fromISO(iso, { zone: zone() }).toMillis();
+
+  it("reads the time in the member's zone and explains what it can't use", () => {
+    const now = at("2031-03-04T18:10");
+    expect(resolveBackTime("9", now, zone())).toEqual({ backMs: at("2031-03-04T21:00"), now: false });
+    expect(resolveBackTime("now", now, zone())).toEqual({ backMs: at("2031-03-04T18:00"), now: true });
+    expect(() => resolveBackTime("banana", now, zone())).toThrow(/couldn't read/);
+    expect(() => resolveBackTime("5pm", now, zone())).toThrow(/already passed/);
+    expect(() => resolveBackTime("6am", now, zone())).toThrow(/between 8am and 4am/);
+    expect(() => resolveBackTime("now", at("2031-03-04T06:00"), zone())).toThrow(/between 4am and 8am/);
+  });
+
+  it("saves busy-until-then, free-from-then as a one-off day and warns about a locked-in session", async () => {
+    const db = await getDb();
+    await saveDateOverride("demo-rosa", "2031-03-04", pattern({ F: [["18:00", "23:00"]] }));
+    const [planned] = await db
+      .insert(playSessions)
+      .values({
+        groupId: ctx.group.id,
+        kind: "planned",
+        startAt: new Date(at("2031-03-04T20:00")),
+        endAt: new Date(at("2031-03-04T23:00")),
+        createdBy: "demo-kai",
+      })
+      .returning();
+    await db.insert(playSessionPlayers).values({ sessionId: planned.id, userId: "demo-rosa", status: "in" });
+    try {
+      ctx = await fresh();
+      const away = await setAwayUntil(ctx, "demo-rosa", "9pm", at("2031-03-04T17:10"));
+      expect(away).toMatchObject({ backMs: at("2031-03-04T21:00"), now: false, lobby: null, clashMs: at("2031-03-04T20:00") });
+      ctx = await fresh();
+      expect(ctx.byId.get("demo-rosa")!.patterns["d:2031-03-04"]).toBe(pattern({ F: [["21:00", "23:00"]] }));
+      const msg = awayMessage(away, zone(), "http://localhost:3000");
+      expect(msg).toContain("Away until **9pm");
+      expect(msg).toContain("free 9–11pm");
+      expect(msg).toContain("locked in for 8pm");
+      expect(msg).toContain("<http://localhost:3000/availability>");
+    } finally {
+      await db.update(playSessions).set({ status: "cancelled" }).where(eq(playSessions.id, planned.id));
+    }
+  });
+
+  it("shows when they'll be back in an open lobby, and 'now' puts them in", async () => {
+    const db = await getDb();
+    const [lobby] = await db
+      .insert(playSessions)
+      .values({ groupId: ctx.group.id, kind: "live", startAt: new Date(at("2031-03-04T18:00")), createdBy: "demo-kai" })
+      .returning();
+    try {
+      const away = await setAwayUntil(ctx, "demo-rosa", "10:30pm", at("2031-03-04T19:00"));
+      expect(away.lobby).toEqual({ sessionId: lobby.id, before: "forming" });
+      let s = (await getSession(ctx.group.id, lobby.id))!;
+      const summary = summarizeLive(5, s.players);
+      expect(summary.soon).toEqual([{ id: "demo-rosa", backAt: at("2031-03-04T22:30") }]);
+      const msg = lobbyMessage(ctx, s.session, summary);
+      expect(msg.content).toContain(`back <t:${at("2031-03-04T22:30") / 1000}:t>`);
+      assertDiscordLimits(msg);
+
+      ctx = await fresh();
+      const back = await setAwayUntil(ctx, "demo-rosa", "now", at("2031-03-04T20:10"));
+      expect(back.now).toBe(true);
+      expect(awayMessage(back, zone(), "http://localhost:3000")).toContain("You're in the lobby");
+      s = (await getSession(ctx.group.id, lobby.id))!;
+      expect(summarizeLive(5, s.players).playing).toEqual(["demo-rosa"]);
+    } finally {
+      await endSession(ctx, lobby.id);
+    }
+  });
+
+  it("answers /back in Discord", async () => {
+    const db = await getDb();
+    await db.update(memberProfiles).set({ discordId: "1001" }).where(eq(memberProfiles.userId, "demo-kai"));
+    const back = async (time?: string) => {
+      const res = await handleInteraction(
+        {
+          id: "1",
+          application_id: "app",
+          type: 2,
+          token: "token",
+          channel_id: "chan",
+          member: { user: { id: "1001", username: "kai" } },
+          data: { name: "back", options: time === undefined ? [] : [{ name: "time", value: time }] },
+        },
+        () => {},
+      );
+      expect(res).toMatchObject({ type: 4, data: { flags: 64 } });
+      return res.data!.content;
+    };
+    expect(await back("banana")).toMatch(/couldn't read “banana”/);
+    expect(await back("4:30am")).toMatch(/between 8am and 4am/);
+    expect(await back()).toMatch(/\/back time:9pm/); // no lobby is open
   });
 });

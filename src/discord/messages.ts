@@ -1,5 +1,16 @@
 import { LATE_VOTING_HOURS, sessionTimeline, type Pause, type PlayWindow, type Weekday } from "@/engine";
-import { WEEKDAY_LONG, WEEKDAY_SHORT, discordTs, fmtDate, fmtDuration } from "@/lib/format";
+import {
+  WEEKDAY_LONG,
+  WEEKDAY_SHORT,
+  discordTs,
+  fmtDate,
+  fmtDuration,
+  fmtRange,
+  fmtTime,
+  fmtWeekdayLong,
+  zoneAbbr,
+} from "@/lib/format";
+import type { AwayResult } from "@/server/away";
 import type { GroupContext, MemberView } from "@/server/context";
 import type { LateTally } from "@/server/lateness";
 import type { LiveSummary, PlaySession } from "@/server/sessions";
@@ -143,7 +154,10 @@ export function lobbyMessage(
     const back = e.backAt ? `, back ${discordTs(e.backAt, "R")}` : "";
     lines.push(`${e.kind === "quick" ? "🍔" : "🍝"} ${mention(ctx.byId.get(e.id))}: ${e.kind} dinner${back}`);
   }
-  if (summary.soon.length) lines.push(`⏳ In ~15 min: ${names(ctx, summary.soon)}`);
+  for (const s of summary.soon) {
+    const when = s.backAt ? `back ${discordTs(s.backAt)} (${discordTs(s.backAt, "R")})` : "on the way";
+    lines.push(`⏳ ${mention(ctx.byId.get(s.id))}: ${when}`);
+  }
   if (summary.declined.length) lines.push(`🙅 Not tonight: ${names(ctx, summary.declined)}`);
   if (summary.left.length) lines.push(`👋 Left: ${names(ctx, summary.left)}`);
   if (freeNow.length) lines.push(`📣 Free right now: ${names(ctx, freeNow)}`);
@@ -183,6 +197,26 @@ export function partyFullMessage(ctx: GroupContext, summary: LiveSummary): Disco
     content: `✅ **Party's full!** ${names(ctx, summary.playing)}, hop in voice and queue up.`,
     allowed_mentions: { users: discordIdsOf(ctx, summary.playing) },
   };
+}
+
+/** Private reply to "/back <time>". Times are shown in their profile's zone, the zone the time was read in. */
+export function awayMessage(away: AwayResult, zone: string, url: string): string {
+  const z = zoneAbbr(zone, away.backMs);
+  const day = away.laterDay ? `${fmtWeekdayLong(away.freeFromMs, zone)} ` : "";
+  const lines = away.now
+    ? [`✅ Welcome back! You're marked free from now until ${fmtTime(away.freeUntilMs, zone)} ${z}.`]
+    : [
+        `👋 Away until **${fmtTime(away.backMs, zone)} ${z}** (${discordTs(away.backMs, "R")}). ` +
+          `You're marked busy until then, and free ${day}${fmtRange(away.freeFromMs, away.freeUntilMs, zone)} ${z}.`,
+      ];
+  if (away.lobby) lines.push(away.now ? "🎮 You're in the lobby." : "⏳ The lobby shows when you'll be back.");
+  if (away.clashMs !== null) {
+    lines.push(
+      `⚠️ Heads up: you're locked in for ${fmtTime(away.clashMs, zone)} ${z} (${discordTs(away.clashMs, "R")}), before you're back. Let the party know.`,
+    );
+  }
+  lines.push(`Change or undo it: <${url}/availability> → Specific days`);
+  return lines.join("\n");
 }
 
 export function wfhVoteMessage(ctx: GroupContext, state: WfhState, url: string): DiscordMessage {

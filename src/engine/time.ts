@@ -1,5 +1,5 @@
 import { DateTime } from "luxon";
-import { CELLS_PER_DAY, DAY_START_HOUR, EMPTY_PATTERN, SLOT_MS } from "./cells";
+import { CELLS_PER_DAY, DAY_START_HOUR, EMPTY_PATTERN, SLOT_MS, cellStart } from "./cells";
 import type { CellState, Weekday } from "./types";
 
 export {
@@ -71,6 +71,16 @@ export function gamingDayOf(ms: number, zone: string): string | null {
   const local = DateTime.fromMillis(ms, { zone });
   if (local.hour >= 4 && local.hour < DAY_START_HOUR) return null;
   return (local.hour < 4 ? local.minus({ days: 1 }) : local).toISODate();
+}
+
+/** The instant a cell boundary (0–40) happens on a local gaming day: 0 → 08:00, 32 → midnight, 40 → 04:00 next day. */
+export function cellInstant(date: string, idx: number, zone: string): number {
+  const { hour, minute } = cellStart(idx);
+  const afterMidnight = idx >= (24 - DAY_START_HOUR) * 2;
+  return DateTime.fromISO(date, { zone })
+    .plus({ days: afterMidnight ? 1 : 0 })
+    .set({ hour, minute })
+    .toMillis();
 }
 
 /**

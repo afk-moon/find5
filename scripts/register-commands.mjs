@@ -30,7 +30,19 @@ const commands = [
       },
     ],
   },
-  { name: "back", description: "Back from dinner" },
+  {
+    name: "back",
+    description: "Back from dinner, or add a time (e.g. 9pm) to say you're away until then",
+    options: [
+      {
+        type: STRING,
+        name: "time",
+        description: "When you'll be back, e.g. 9pm, 9:30pm, 21:30 or now (in your profile's time zone)",
+        required: false,
+        max_length: 20,
+      },
+    ],
+  },
   {
     name: "wfh",
     description: "Post the WFH-day vote",

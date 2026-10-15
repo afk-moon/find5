@@ -196,7 +196,8 @@ export interface LiveSummary {
   state: "full" | "paused" | "forming";
   playing: string[];
   eating: Array<{ id: string; kind: "quick" | "long"; backAt: number | null }>;
-  soon: string[];
+  /** On the way ("In 15 min", or /back with a time), earliest first. */
+  soon: Array<{ id: string; backAt: number | null }>;
   declined: string[];
   left: string[];
   /** How many more people are needed (quick diners count, since the party waits for them). */
@@ -214,13 +215,17 @@ export function summarizeLive(partySize: number, players: SessionPlayer[]): Live
       kind: p.status === "quick_dinner" ? ("quick" as const) : ("long" as const),
       backAt: p.backAt?.getTime() ?? null,
     }));
+  const soon = players
+    .filter((p) => p.status === "soon")
+    .map((p) => ({ id: p.userId, backAt: p.backAt?.getTime() ?? null }))
+    .sort((a, b) => (a.backAt ?? Infinity) - (b.backAt ?? Infinity));
   const state =
     playing.length >= partySize ? "full" : playing.length + quick.length >= partySize ? "paused" : "forming";
   return {
     state,
     playing,
     eating,
-    soon: ids("soon"),
+    soon,
     declined: ids("declined"),
     left: ids("left"),
     needed: Math.max(0, partySize - playing.length - quick.length),

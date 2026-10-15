@@ -1,5 +1,5 @@
 import { DateTime } from "luxon";
-import { EMPTY_PATTERN, isWfhDate, resolvePattern } from "@/engine";
+import { EMPTY_PATTERN, gamingDayOf, isWfhDate, resolvePattern } from "@/engine";
 import { zoneAbbr } from "@/lib/format";
 import { requireViewer, toEngineInput } from "@/server/context";
 import { AvailabilityEditor, type DateEntry } from "./AvailabilityEditor";
@@ -15,7 +15,11 @@ export default async function AvailabilityPage() {
   const wfhWeek: Record<number, string> = {};
   for (let d = 1; d <= 5; d++) wfhWeek[d] = me.patterns[`wfh${d}`] ?? me.patterns.wfh ?? week[d];
 
-  const today = DateTime.now().setZone(me.timezone).startOf("day");
+  // Start at the gaming day that's on now: at 1am, last night is still "today" (it runs until 4am).
+  const zoneNow = DateTime.now().setZone(me.timezone);
+  const today = DateTime.fromISO(gamingDayOf(zoneNow.toMillis(), me.timezone) ?? zoneNow.toISODate()!, {
+    zone: me.timezone,
+  });
   const dates: DateEntry[] = Array.from({ length: 14 }, (_, i) => {
     const day = today.plus({ days: i });
     const date = day.toISODate()!;

@@ -5,3 +5,4 @@ export * from "./availability";
 export * from "./match";
 export * from "./wfh";
 export * from "./lateness";
+export * from "./away";

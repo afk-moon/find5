@@ -130,7 +130,15 @@ export default async function LivePage() {
               })}
             </div>
           )}
-          <Group title="In ~15 min" ids={summary.soon} lookup={name} extra={() => ""} />
+          <Group
+            title="On the way"
+            ids={summary.soon.map((s) => s.id)}
+            lookup={name}
+            extra={(id) => {
+              const at = summary.soon.find((s) => s.id === id)?.backAt;
+              return at ? `back ${fmtTime(at, zone)} (${fmtRelative(at, now)})` : "";
+            }}
+          />
           <Group title="Not tonight" ids={summary.declined} lookup={name} extra={() => ""} dim />
           <Group title="Left" ids={summary.left} lookup={name} extra={() => ""} dim />
           {waiting.length > 0 && (
