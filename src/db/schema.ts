@@ -112,7 +112,8 @@ export const memberships = pgTable(
 
 /**
  * 40-cell availability patterns (08:00 → 04:00 local).
- * key: "w1"…"w7" = typical weekday (ISO), "wfh" = WFH-day pattern, "d:YYYY-MM-DD" = date override.
+ * key: "w1"…"w7" = typical weekday (ISO), "wfh1"…"wfh5" = that weekday when working from home,
+ * "wfh" = older shared WFH-day pattern (used for weekdays without their own), "d:YYYY-MM-DD" = date override.
  */
 export const dayPatterns = pgTable(
   "day_patterns",

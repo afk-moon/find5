@@ -189,8 +189,9 @@ subs. Windows are ranked by play time, then fewer pauses, more subs, and fewer �
 - Session plans include a “⏰ last comp queue” time: dinner time minus a ~40 min match.
 
 **Hybrid WFH sync.**
-- Hybrid members mark each weekday as Office, Flexible, or Always WFH. They also paint a WFH-day
-  pattern (usually an earlier start) and can say how late they can stay up the night before a WFH day.
+- Hybrid members mark each weekday as Office, Flexible, or Always WFH. They also paint what each WFH
+  weekday looks like (usually an earlier start; a WFH Monday can differ from a WFH Friday) and can say
+  how late they can stay up the night before a WFH day.
 - Each week they vote on flexible days. The day the most hybrid members can share wins. Ties go to the
   day that unlocks the most extra 5-stack time.
 - Winning days become WFH dates, and everyone's windows recalculate.

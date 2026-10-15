@@ -15,7 +15,7 @@ import {
   saveDateOverride,
   saveProfile,
   saveWeekPatterns,
-  saveWfhPattern,
+  saveWfhWeek,
   setWfhDate,
   type ProfileInput,
 } from "@/server/availability";
@@ -76,12 +76,12 @@ export async function saveWeekAction(weekly: Record<string, string>): Promise<Ac
   }
 }
 
-export async function saveWfhPatternAction(cells: string): Promise<ActionResult> {
+export async function saveWfhWeekAction(days: Record<string, string>): Promise<ActionResult> {
   const { userId } = await requireViewer();
   try {
-    await saveWfhPattern(userId, cells);
+    await saveWfhWeek(userId, days);
     refreshAll();
-    return { ok: true, message: "WFH day saved" };
+    return { ok: true, message: "WFH days saved" };
   } catch (e) {
     return actionError(e);
   }

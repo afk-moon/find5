@@ -119,9 +119,11 @@ export async function loadGroupContext(groupId: string): Promise<GroupContext> {
 
 export function toEngineInput(m: MemberView): MemberInput {
   const weekly: MemberInput["weekly"] = {};
+  const wfhWeekly: NonNullable<MemberInput["wfhWeekly"]> = {};
   const overrides: Record<string, string> = {};
   for (const [key, cells] of Object.entries(m.patterns)) {
     if (/^w[1-7]$/.test(key)) weekly[Number(key.slice(1)) as Weekday] = cells;
+    else if (/^wfh[1-7]$/.test(key)) wfhWeekly[Number(key.slice(3)) as Weekday] = cells;
     else if (key.startsWith("d:")) overrides[key.slice(2)] = cells;
   }
   const hybrid = m.workStyle === "hybrid";
@@ -132,6 +134,7 @@ export function toEngineInput(m: MemberView): MemberInput {
     weekly,
     overrides,
     wfhPattern: hybrid ? (m.patterns.wfh ?? null) : null,
+    wfhWeekly: hybrid ? wfhWeekly : undefined,
     hybridDays: hybrid ? m.hybridDays : undefined,
     wfhDates: hybrid ? new Set(m.wfhDates) : undefined,
     nightBeforeWfhUntil: hybrid ? m.nightBeforeWfhUntil : null,

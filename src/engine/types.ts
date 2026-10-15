@@ -26,6 +26,8 @@ export interface MemberInput {
   weekly: Partial<Record<Weekday, string>>;
   /** Pattern used on WFH dates (hybrid members). Falls back to the weekday pattern. */
   wfhPattern?: string | null;
+  /** WFH pattern for a specific weekday (WFH Mondays can differ from WFH Fridays). Beats `wfhPattern`. */
+  wfhWeekly?: Partial<Record<Weekday, string>>;
   /** One-off patterns keyed by local gaming-day date "YYYY-MM-DD". Highest priority. */
   overrides?: Readonly<Record<string, string>>;
   /** Hybrid schedule for Mon–Fri. "wfh" days are always WFH; "flex" days can be voted on. */

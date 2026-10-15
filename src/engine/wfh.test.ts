@@ -24,6 +24,14 @@ describe("resolvePattern", () => {
     expect(resolvePattern(kai, "2026-10-20")).toBe(office); // flexible Tuesday, not picked
   });
 
+  it("uses a weekday's own WFH pattern when there is one", () => {
+    const fridayWfh = pattern({ F: [["15:00", "23:00"]] });
+    const withFriday = { ...kai, wfhWeekly: { 5: fridayWfh } };
+    expect(resolvePattern(withFriday, "2026-10-23")).toBe(fridayWfh); // WFH Friday has its own pattern
+    expect(resolvePattern(withFriday, "2026-10-22")).toBe(pattern({ F: [["17:00", "01:00"]] })); // WFH Thursday: general one
+    expect(resolvePattern({ ...withFriday, hybridDays: { 5: "office" } }, "2026-10-23")).toBe(office); // not WFH that Friday
+  });
+
   it("lets them stay up later the night before a WFH day", () => {
     expect(resolvePattern(kai, "2026-10-21")).toBe(pattern({ F: [["19:00", "01:00"]] })); // Wed → Thu WFH
     expect(resolvePattern(kai, "2026-10-22")).toBe(pattern({ F: [["17:00", "01:00"]] })); // Thu WFH → Fri WFH

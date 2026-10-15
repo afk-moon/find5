@@ -26,8 +26,12 @@ export async function saveWeekPatterns(userId: string, weekly: Record<string, st
   }
 }
 
-export async function saveWfhPattern(userId: string, cells: string) {
-  await upsertPattern(userId, "wfh", cells);
+/** WFH-day patterns per weekday (Mon–Fri): WFH Mondays can look different from WFH Fridays. */
+export async function saveWfhWeek(userId: string, days: Record<string, string>) {
+  for (const [day, cells] of Object.entries(days)) {
+    if (!/^[1-5]$/.test(day)) throw new Error(`Bad WFH weekday ${day}`);
+    await upsertPattern(userId, `wfh${day}`, cells);
+  }
 }
 
 /** Set (or clear, with null) a one-off pattern for a specific gaming day. */

@@ -19,15 +19,16 @@ export function isWfhDate(member: MemberInput, date: string): boolean {
 
 /**
  * Which pattern applies on a local gaming day:
- *   date override  >  WFH-day pattern (on WFH dates)  >  typical weekday pattern.
+ *   date override  >  that weekday's WFH pattern  >  general WFH pattern (on WFH dates)  >  typical weekday.
  * The night before a WFH day, the evening is extended to `nightBeforeWfhUntil`.
  */
 export function resolvePattern(member: MemberInput, date: string): string {
   const override = member.overrides?.[date];
   if (override != null) return normalizePattern(override);
 
-  const base =
-    (isWfhDate(member, date) && member.wfhPattern) || member.weekly[weekdayOf(date)] || EMPTY_PATTERN;
+  const weekday = weekdayOf(date);
+  const wfh = isWfhDate(member, date) ? member.wfhWeekly?.[weekday] || member.wfhPattern : null;
+  const base = wfh || member.weekly[weekday] || EMPTY_PATTERN;
   let p = normalizePattern(base);
   if (member.nightBeforeWfhUntil && isWfhDate(member, addDays(date, 1))) {
     p = extendEvening(p, member.nightBeforeWfhUntil);

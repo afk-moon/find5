@@ -11,6 +11,9 @@ export default async function AvailabilityPage() {
 
   const week: Record<number, string> = {};
   for (let d = 1; d <= 7; d++) week[d] = me.patterns[`w${d}`] ?? EMPTY_PATTERN;
+  // Each WFH weekday: its own saved pattern, else the older shared WFH pattern, else the typical day.
+  const wfhWeek: Record<number, string> = {};
+  for (let d = 1; d <= 5; d++) wfhWeek[d] = me.patterns[`wfh${d}`] ?? me.patterns.wfh ?? week[d];
 
   const today = DateTime.now().setZone(me.timezone).startOf("day");
   const dates: DateEntry[] = Array.from({ length: 14 }, (_, i) => {
@@ -38,7 +41,8 @@ export default async function AvailabilityPage() {
       <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_320px]">
         <AvailabilityEditor
           week={week}
-          wfh={me.patterns.wfh ?? week[1]}
+          wfhWeek={wfhWeek}
+          hybridDays={me.hybridDays}
           hybrid={me.workStyle === "hybrid"}
           dates={dates}
           zoneLabel={`${zoneAbbr(me.timezone)} (${me.timezone})`}

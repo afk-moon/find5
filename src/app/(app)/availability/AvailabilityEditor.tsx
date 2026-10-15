@@ -2,8 +2,9 @@
 
 import { useRouter } from "next/navigation";
 import { Fragment, useRef, useState, useTransition } from "react";
-import { saveOverrideAction, saveWeekAction, saveWfhPatternAction, toggleWfhDateAction } from "@/app/actions";
+import { saveOverrideAction, saveWeekAction, saveWfhWeekAction, toggleWfhDateAction } from "@/app/actions";
 import { CELLS_PER_DAY, cellLabel, setCell } from "@/engine/cells";
+import type { HybridMode } from "@/engine/types";
 import type { ActionResult } from "@/lib/action-result";
 
 type State = "." | "F" | "M" | "Q" | "L";
@@ -17,6 +18,7 @@ const BRUSHES: Array<{ state: State; label: string; swatch: string }> = [
 ];
 const CELL_BG: Record<State, string> = { ".": "bg-ink-2", F: "bg-free", M: "bg-maybe", Q: "bg-quick", L: "bg-long" };
 const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+const MODE_LABEL: Record<HybridMode, string> = { office: "office", flex: "flexible", wfh: "always WFH" };
 
 function withoutKey(obj: Record<string, string>, key: string): Record<string, string> {
   const copy = { ...obj };
@@ -35,6 +37,8 @@ export interface DateEntry {
 interface Column {
   key: string;
   label: string;
+  /** Small second line under the label. */
+  sub?: string;
   cells: string;
 }
 
@@ -69,6 +73,7 @@ function PaintGrid({ columns, brush, onPaint }: { columns: Column[]; brush: Stat
         {columns.map((c) => (
           <div key={c.key} className="pb-1 text-center text-xs font-semibold text-bone">
             {c.label}
+            {c.sub && <div className="text-[10px] font-normal text-muted">{c.sub}</div>}
           </div>
         ))}
         {Array.from({ length: CELLS_PER_DAY }, (_, idx) => (
@@ -92,13 +97,16 @@ function PaintGrid({ columns, brush, onPaint }: { columns: Column[]; brush: Stat
 
 export function AvailabilityEditor({
   week: initialWeek,
-  wfh: initialWfh,
+  wfhWeek: initialWfhWeek,
+  hybridDays,
   hybrid,
   dates,
   zoneLabel,
 }: {
   week: Record<number, string>;
-  wfh: string;
+  /** WFH-day pattern for each weekday, Mon (1) to Fri (5). */
+  wfhWeek: Record<number, string>;
+  hybridDays: Partial<Record<number, HybridMode>>;
   hybrid: boolean;
   dates: DateEntry[];
   zoneLabel: string;
@@ -108,8 +116,8 @@ export function AvailabilityEditor({
   const [brush, setBrush] = useState<State>("F");
   const [week, setWeek] = useState(initialWeek);
   const [savedWeek, setSavedWeek] = useState(initialWeek);
-  const [wfh, setWfh] = useState(initialWfh);
-  const [savedWfh, setSavedWfh] = useState(initialWfh);
+  const [wfhWeek, setWfhWeek] = useState(initialWfhWeek);
+  const [savedWfhWeek, setSavedWfhWeek] = useState(initialWfhWeek);
   const [selected, setSelected] = useState(dates[0]?.date);
   const [dateEdits, setDateEdits] = useState<Record<string, string>>({});
   const [result, setResult] = useState<ActionResult | null>(null);
@@ -128,13 +136,13 @@ export function AvailabilityEditor({
   const entry = dates.find((d) => d.date === selected);
   const dateCells = selected ? (dateEdits[selected] ?? entry?.cells ?? "") : "";
   const weekDirty = JSON.stringify(week) !== JSON.stringify(savedWeek);
-  const wfhDirty = wfh !== savedWfh;
+  const wfhDirty = JSON.stringify(wfhWeek) !== JSON.stringify(savedWfhWeek);
 
   const paint = (key: string, idx: number, s: State) => {
     if (tab === "week") {
       setWeek((w) => (w[Number(key)][idx] === s ? w : { ...w, [key]: setCell(w[Number(key)], idx, s) }));
     } else if (tab === "wfh") {
-      setWfh((p) => (p[idx] === s ? p : setCell(p, idx, s)));
+      setWfhWeek((w) => (w[Number(key)][idx] === s ? w : { ...w, [key]: setCell(w[Number(key)], idx, s) }));
     } else if (selected) {
       setDateEdits((d) => {
         const current = d[selected] ?? entry?.cells ?? "";
@@ -146,7 +154,7 @@ export function AvailabilityEditor({
 
   const tabs = [
     { id: "week" as const, label: "Typical week" },
-    ...(hybrid ? [{ id: "wfh" as const, label: "🏠 WFH day" }] : []),
+    ...(hybrid ? [{ id: "wfh" as const, label: "🏠 WFH days" }] : []),
     { id: "dates" as const, label: "Specific days" },
   ];
 
@@ -204,21 +212,35 @@ export function AvailabilityEditor({
       {tab === "wfh" && (
         <>
           <p className="text-sm text-muted">
-            On your WFH days this replaces your normal weekday (no commute, so you can usually start earlier). Pick
-            which days are WFH in your profile, or vote on the WFH sync page.
+            What each weekday looks like when you work from home (no commute, so you can usually start earlier).
+            On a WFH day this replaces your typical day. Pick which days are WFH in your profile, or vote on the WFH
+            sync page.
           </p>
-          <div className="max-w-xs">
-            <PaintGrid brush={brush} onPaint={paint} columns={[{ key: "wfh", label: "WFH day", cells: wfh }]} />
-          </div>
+          <PaintGrid
+            brush={brush}
+            onPaint={paint}
+            columns={WEEKDAYS.slice(0, 5).map((label, i) => ({
+              key: String(i + 1),
+              label,
+              sub: MODE_LABEL[hybridDays[i + 1] ?? "office"],
+              cells: wfhWeek[i + 1],
+            }))}
+          />
           <div className="flex flex-wrap items-center gap-2">
-            <button className="btn btn-ghost text-xs" onClick={() => setWfh(week[1])}>
-              Start from my Monday
+            <button className="btn btn-ghost text-xs" onClick={() => setWfhWeek((w) => ({ ...w, 2: w[1], 3: w[1], 4: w[1], 5: w[1] }))}>
+              Copy Mon → Tue–Fri
+            </button>
+            <button
+              className="btn btn-ghost text-xs"
+              onClick={() => setWfhWeek({ 1: week[1], 2: week[2], 3: week[3], 4: week[4], 5: week[5] })}
+            >
+              Start from my typical week
             </button>
             <SaveBar
               dirty={wfhDirty}
               pending={pending}
               result={result}
-              onSave={() => run(() => saveWfhPatternAction(wfh), () => setSavedWfh(wfh))}
+              onSave={() => run(() => saveWfhWeekAction(Object.fromEntries(Object.entries(wfhWeek))), () => setSavedWfhWeek(wfhWeek))}
             />
           </div>
         </>

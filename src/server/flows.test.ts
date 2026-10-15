@@ -6,12 +6,12 @@ import { beforeAll, describe, expect, it } from "vitest";
 // Throwaway embedded database (seeded with the demo group on first use).
 process.env.PGLITE_DIR = mkdtempSync(path.join(tmpdir(), "receptionist-flows-"));
 
-const { loadGroupContext } = await import("./context");
+const { loadGroupContext, toEngineInput } = await import("./context");
 const { upcomingWindows } = await import("./windows");
 const { lockInWindow, upcomingPlanned, startLive, setPlayerStatus, goToDinner, getSession, summarizeLive, endSession, activeLive } =
   await import("./sessions");
 const { getWfhState, toggleBallotDay, closeVote, reopenVote, weekStartOf } = await import("./wfh");
-const { saveProfile, saveDateOverride, createMember } = await import("./availability");
+const { saveProfile, saveDateOverride, createMember, saveWfhWeek } = await import("./availability");
 const { openLateVotes, toggleLateReport, getLateTally } = await import("./lateness");
 const { lobbyMessage, wfhVoteMessage, plannedSessionMessage, windowsMessage, storedPlannedMessage, mention } =
   await import("@/discord/messages");
@@ -19,8 +19,9 @@ const { handleInteraction } = await import("@/discord/handlers");
 const { getDb } = await import("@/db");
 const { memberProfiles } = await import("@/db/schema");
 const { DEMO_GROUP_ID } = await import("@/db/seed");
-const { pattern, lateVotingState } = await import("@/engine");
+const { pattern, lateVotingState, resolvePattern } = await import("@/engine");
 const { eq } = await import("drizzle-orm");
+const { DateTime } = await import("luxon");
 
 type Ctx = Awaited<ReturnType<typeof loadGroupContext>>;
 let ctx: Ctx;
@@ -252,5 +253,23 @@ describe("late reports", () => {
     expect(closed.type).toBe(7);
     expect(closed.data!.content).toContain("Late check closed");
     expect(closed.data!.components).toEqual([]);
+  });
+});
+
+describe("WFH patterns per weekday", () => {
+  it("uses each weekday's own WFH pattern, and the shared one for days without their own", async () => {
+    const friday = pattern({ F: [["15:00", "23:00"]] });
+    await saveWfhWeek("demo-kai", { 5: friday });
+    await expect(saveWfhWeek("demo-kai", { 6: friday })).rejects.toThrow(/Bad WFH weekday/);
+    ctx = await fresh();
+    const kai = toEngineInput(ctx.byId.get("demo-kai")!);
+    expect(kai.wfhWeekly).toEqual({ 5: friday });
+
+    // Kai always works from home on Fridays (seeded), so a Friday uses the new Friday pattern...
+    const nextFriday = DateTime.now().setZone(kai.timezone).plus({ weeks: 1 }).set({ weekday: 5 }).toISODate()!;
+    expect(resolvePattern(kai, nextFriday)).toBe(friday);
+    // ...while a WFH Thursday still uses the shared WFH pattern from before.
+    const thursday = DateTime.fromISO(nextFriday).minus({ days: 1 }).toISODate()!;
+    expect(resolvePattern({ ...kai, wfhDates: new Set([thursday]) }, thursday)).toBe(kai.wfhPattern);
   });
 });
