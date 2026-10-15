@@ -20,7 +20,8 @@ import {
   type ProfileInput,
 } from "@/server/availability";
 import { loadGroupContext, requireViewer } from "@/server/context";
-import { announceLockIn, announceWfhDecision, syncLobby, syncWfhVote } from "@/server/notify";
+import { toggleLateReport } from "@/server/lateness";
+import { announceLockIn, announceWfhDecision, syncLobby, syncPlannedMessage, syncWfhVote } from "@/server/notify";
 import { SESSION_COOKIE } from "@/server/session-cookie";
 import {
   cancelSession,
@@ -140,6 +141,19 @@ export async function cancelSessionAction(sessionId: string): Promise<ActionResu
     await cancelSession(ctx.group.id, sessionId);
     refreshAll();
     return { ok: true, message: "Cancelled" };
+  } catch (e) {
+    return actionError(e);
+  }
+}
+
+/** Report a teammate as late for a started session (tap again to take it back). */
+export async function toggleLateReportAction(sessionId: string, lateUserId: string): Promise<ActionResult> {
+  const { ctx, userId } = await requireViewer();
+  try {
+    await toggleLateReport(ctx, sessionId, userId, lateUserId);
+    await syncPlannedMessage(ctx, sessionId);
+    refreshAll();
+    return { ok: true };
   } catch (e) {
     return actionError(e);
   }

@@ -8,6 +8,8 @@ optional Discord bot.
 - **Dinner-aware:** a 🍔 quick dinner pauses the party; a 🍝 long dinner splits the session.
 - **WFH sync:** hybrid members vote on a shared work-from-home day that unlocks the most play time.
 - **Live lobby:** “who's on right now?” with I'm in / in 15 min / dinner / back.
+- **Late reports:** once a locked-in session starts, teammates can report who was late. Anyone late in
+  more than half of their last 10 sessions gets a ⏰ **Frequently late** tag next to their name.
 - **Discord:** login, slash commands, lobby buttons, announcements, and Scheduled Events.
 
 ---
@@ -111,6 +113,10 @@ Things to try:
 - Lock in a window.
 - Open a **Live** lobby.
 - Vote on **WFH sync** as Maya or Kai (they're the hybrid workers).
+- Try the ⏰ **late check** on the Windows page. The demo data includes a session that started about 2
+  hours before your first run, and its late check stays open for 24 hours (`npm run db:reset` gives you a
+  fresh one). Maya already reported Sam, so one more report from anyone else makes it count. Sam
+  already has the **Frequently late** tag from the demo history.
 
 ### 5. (Optional) Settings
 
@@ -151,7 +157,8 @@ you've already started the app once.
 - **Port 3000 is already in use:** run `npm run dev -- -p 3001` and open <http://localhost:3001>. If you
   use Discord, update `APP_URL` too.
 - **Database errors after pulling new changes, or you want fresh demo data:** run `npm run db:reset`,
-  then start again.
+  then start again. New tables are added automatically, but demo data is only created for a brand-new
+  database. For example, you won't see the demo late history until you reset.
 - **Company laptop with a private npm registry:** nothing to change. The lockfile uses public npm URLs,
   and npm automatically swaps in your configured registry.
 
@@ -190,6 +197,20 @@ subs. Windows are ranked by play time, then fewer pauses, more subs, and fewer �
 
 **Live lobby.** `/lfg` in Discord, or the **Live** page, opens a lobby. It pings whoever is free right
 now, tracks quick and long dinners with “back in…” countdowns, and pings the party when it's full.
+
+**Late reports.** These work on locked-in sessions, from the Windows page or the buttons on the
+session's Discord post.
+- Reporting opens at the session's start time and stays open for 24 hours. Before that, the buttons
+  only say when it opens.
+- Only players in that session can report, and not themselves. Tap again to take a report back.
+- Someone counts as late once at least half of the *other* players report them (2 of 4 in a 5-stack),
+  so one person can't mark someone late alone.
+- Everyone sees the counts, but not who reported whom.
+- **⏰ Frequently late** = late in more than half (over 50%) of their most recent 10 sessions. A session
+  counts once its 24 hours of voting are over, and the tag needs at least 3 finished sessions, so one bad
+  night doesn't tag a new member.
+- A session can't be cancelled after it starts, so cancelling can't wipe out late reports.
+- All of these numbers are constants at the top of `src/engine/lateness.ts`.
 
 ---
 
@@ -231,7 +252,8 @@ Commands:
 - `/wfh [this|next]`: post the WFH vote
 
 Locking in a window posts the plan and creates a Discord Scheduled Event; Discord notifies everyone who
-taps “Interested”.
+taps “Interested”. The post also has a “*name* was late” button for each player. These work once the
+session starts: the post shows only the counts, and the person who tapped gets a private confirmation.
 
 ---
 
@@ -246,17 +268,18 @@ This works on any Node host. With Vercel plus a hosted Postgres (Supabase, Neon,
    you want the demo friends in the hosted database.
 
 `vercel.json` runs `/api/cron/daily` once a day. It opens next week's WFH vote on the group's “open”
-weekday (Thu by default) and decides it on the “close” weekday (Fri). Demo login is off in production
-unless `ALLOW_DEV_LOGIN=1`.
+weekday (Thu by default) and decides it on the “close” weekday (Fri). It also updates the Discord posts of
+late checks that have closed, showing who was late and removing the buttons. Demo login is off in
+production unless `ALLOW_DEV_LOGIN=1`.
 
 ---
 
 ## Project layout
 
 ```
-src/engine/     Scheduling engine (pure TypeScript): time zones/DST, matching, dinners, WFH planner, plus tests
+src/engine/     Scheduling engine (pure TypeScript): time zones/DST, matching, dinners, WFH planner, late rules, plus tests
 src/db/         Database schema (Drizzle), embedded-Postgres/Postgres client, demo data
-src/server/     Logic shared by the website and the bot: windows, sessions, WFH votes, availability, Discord sync
+src/server/     Logic shared by the website and the bot: windows, sessions, WFH votes, late reports, availability, Discord sync
 src/discord/    Discord request verification, REST client, message builders, command and button handlers
 src/app/        Next.js pages (Windows, Live, My availability, WFH sync, Settings, Login), actions, API routes
 scripts/        register-commands.mjs (Discord slash commands)

@@ -8,6 +8,7 @@ import {
 } from "@/app/actions";
 import { ActionButton } from "@/components/ActionButton";
 import { Avatar } from "@/components/Avatar";
+import { MemberName } from "@/components/LateTag";
 import { botConfigured } from "@/discord/rest";
 import type { PlayWindow, Weekday } from "@/engine";
 import { WEEKDAY_LONG, fmtDate, fmtDuration, fmtRange, zoneAbbr } from "@/lib/format";
@@ -139,9 +140,9 @@ export default async function WfhPage({ searchParams }: { searchParams: Promise<
                 {flexible.map((m) => {
                   const ballot = state.ballots[m.id];
                   return (
-                    <div key={m.id} className="flex items-center gap-2">
+                    <div key={m.id} className="flex flex-wrap items-center gap-2">
                       <Avatar name={m.name} color={m.color} image={m.image} size={20} />
-                      <span>{m.name}</span>
+                      <MemberName m={m} className="" />
                       <span className="ml-auto text-xs">
                         {ballot === undefined ? <span className="text-muted">hasn&apos;t voted</span> : ballot.includes(o.weekday) ? "✅ can WFH" : "▫️ can't"}
                       </span>

@@ -6,8 +6,11 @@ import {
   dayPatterns,
   groups,
   hybridDays,
+  lateReports,
   memberProfiles,
   memberships,
+  playSessionPlayers,
+  playSessions,
   user,
   wfhBallots,
   wfhVotes,
@@ -104,6 +107,53 @@ export const DEMO_MEMBERS: DemoMember[] = [
 export const DEMO_GROUP_ID = "demo-squad";
 const HOME_ZONE = "America/Chicago";
 
+/**
+ * Past locked-in sessions (6:30pm PT, all five players) and who reported whom as late.
+ * Sam counts as late in 6 of the last 10 (frequently late); Dev in 1. One report alone never counts,
+ * and the 11th session is too old to matter. Sam keeps 6 of 10 even after the open session below closes.
+ */
+const LATE_HISTORY: Array<{ daysAgo: number; late?: Record<string, string[]> }> = [
+  { daysAgo: 2, late: { "demo-sam": ["demo-maya", "demo-kai"] } },
+  { daysAgo: 3 },
+  { daysAgo: 4, late: { "demo-sam": ["demo-dev", "demo-rosa", "demo-kai"] } },
+  { daysAgo: 5, late: { "demo-sam": ["demo-maya", "demo-rosa"] } },
+  { daysAgo: 6, late: { "demo-dev": ["demo-sam", "demo-kai"], "demo-sam": ["demo-rosa"] } },
+  { daysAgo: 8, late: { "demo-sam": ["demo-maya", "demo-dev"] } },
+  { daysAgo: 9, late: { "demo-sam": ["demo-kai"] } },
+  { daysAgo: 12, late: { "demo-sam": ["demo-rosa", "demo-kai"] } },
+  { daysAgo: 13, late: { "demo-sam": ["demo-maya", "demo-dev", "demo-rosa", "demo-kai"] } },
+  { daysAgo: 15 },
+  { daysAgo: 16, late: { "demo-sam": ["demo-maya", "demo-kai"] } },
+];
+
+async function seedSession(
+  db: DB,
+  startMs: number,
+  minutes: number,
+  status: "active" | "ended",
+  late: Record<string, string[]> = {},
+) {
+  const [session] = await db
+    .insert(playSessions)
+    .values({
+      groupId: DEMO_GROUP_ID,
+      kind: "planned",
+      status,
+      startAt: new Date(startMs),
+      endAt: new Date(startMs + minutes * 60_000),
+      plan: { playMinutes: minutes, subs: 0, pauses: [] },
+      createdBy: "demo-maya",
+    })
+    .returning({ id: playSessions.id });
+  await db
+    .insert(playSessionPlayers)
+    .values(DEMO_MEMBERS.map((m) => ({ sessionId: session.id, userId: m.id, status: "in" as const })));
+  const reports = Object.entries(late).flatMap(([lateUserId, by]) =>
+    by.map((reporterId) => ({ sessionId: session.id, reporterId, lateUserId })),
+  );
+  if (reports.length) await db.insert(lateReports).values(reports);
+}
+
 export async function seedDemo(db: DB) {
   await db.insert(groups).values({ id: DEMO_GROUP_ID, name: "Valorant Squad", homeTimezone: HOME_ZONE });
 
@@ -145,4 +195,15 @@ export async function seedDemo(db: DB) {
     .values({ groupId: DEMO_GROUP_ID, weekStart: nextMonday })
     .returning({ id: wfhVotes.id });
   await db.insert(wfhBallots).values({ voteId: vote.id, userId: "demo-kai", days: [4] });
+
+  // Late-check history, plus a session that started 1.5–2h ago so its late check is open right away
+  // (Maya already reported Sam; one more report would make it count).
+  const pacific = DateTime.now().setZone("America/Los_Angeles");
+  for (const { daysAgo, late } of LATE_HISTORY) {
+    const start = pacific.minus({ days: daysAgo }).set({ hour: 18, minute: 30, second: 0, millisecond: 0 });
+    await seedSession(db, start.toMillis(), 150, "ended", late);
+  }
+  const halfHour = 30 * 60_000;
+  const recentStart = Math.floor((Date.now() - 90 * 60_000) / halfHour) * halfHour;
+  await seedSession(db, recentStart, 180, "active", { "demo-sam": ["demo-maya"] });
 }

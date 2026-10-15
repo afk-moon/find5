@@ -12,9 +12,15 @@ const { lockInWindow, upcomingPlanned, startLive, setPlayerStatus, goToDinner, g
   await import("./sessions");
 const { getWfhState, toggleBallotDay, closeVote, reopenVote, weekStartOf } = await import("./wfh");
 const { saveProfile, saveDateOverride, createMember } = await import("./availability");
-const { lobbyMessage, wfhVoteMessage, plannedSessionMessage, windowsMessage } = await import("@/discord/messages");
+const { openLateVotes, toggleLateReport, getLateTally } = await import("./lateness");
+const { lobbyMessage, wfhVoteMessage, plannedSessionMessage, windowsMessage, storedPlannedMessage, mention } =
+  await import("@/discord/messages");
+const { handleInteraction } = await import("@/discord/handlers");
+const { getDb } = await import("@/db");
+const { memberProfiles } = await import("@/db/schema");
 const { DEMO_GROUP_ID } = await import("@/db/seed");
-const { pattern } = await import("@/engine");
+const { pattern, lateVotingState } = await import("@/engine");
+const { eq } = await import("drizzle-orm");
 
 type Ctx = Awaited<ReturnType<typeof loadGroupContext>>;
 let ctx: Ctx;
@@ -141,5 +147,110 @@ describe("profiles and members", () => {
     expect(ctx.members).toHaveLength(6);
     expect(Object.keys(ctx.byId.get(id)!.patterns)).toHaveLength(7);
     await expect(saveProfile("demo-dev", { timezone: "Mars/Olympus", workStyle: "fixed", nightBeforeWfhUntil: null, hybridDays: {} })).rejects.toThrow(/time zone/);
+  });
+});
+
+describe("late reports", () => {
+  /** The seeded session that started a little while ago (Maya already reported Sam). */
+  const seededOpen = () => openLateVotes(ctx, "demo-kai").find((t) => t.counts["demo-sam"] === 1)!;
+  const closedSession = () => ctx.lateRecords.find((r) => lateVotingState(r.startMs, Date.now()) === "closed")!;
+  async function futureSessionId() {
+    const planned = await upcomingPlanned(ctx.group.id);
+    const existing = planned.find((p) => p.session.startAt.getTime() > Date.now());
+    if (existing) return existing.session.id;
+    const w = upcomingWindows(ctx).find((x) => x.startMs > Date.now())!;
+    return (await lockInWindow(ctx, "demo-kai", w.startMs, w.endMs)).session.id;
+  }
+
+  it("tags Sam as frequently late from the seeded history", () => {
+    expect(ctx.byId.get("demo-sam")!.lateness).toEqual({ late: 6, sessions: 10, frequentlyLate: true });
+    expect(ctx.byId.get("demo-dev")!.lateness).toEqual({ late: 1, sessions: 10, frequentlyLate: false });
+    expect(mention(ctx.byId.get("demo-sam"))).toContain("frequently late");
+    expect(mention(ctx.byId.get("demo-dev"))).not.toContain("frequently late");
+  });
+
+  it("counts a report toward late and lets the reporter take it back", async () => {
+    const open = seededOpen();
+    expect(open).toMatchObject({ voting: "open", needed: 2, counts: { "demo-sam": 1 }, mine: [] });
+
+    const on = await toggleLateReport(ctx, open.sessionId, "demo-kai", "demo-sam");
+    expect(on.reported).toBe(true);
+    expect(on.tally.counts["demo-sam"]).toBe(2);
+    expect(on.tally.mine).toEqual(["demo-sam"]);
+
+    const found = (await getLateTally(ctx.group.id, open.sessionId))!;
+    expect(found.tally.mine).toEqual([]); // nobody else can see who reported
+    const msg = storedPlannedMessage(ctx, found.session, found.tally);
+    assertDiscordLimits(msg);
+    expect(msg.content).toContain("counts as late");
+
+    const off = await toggleLateReport(ctx, open.sessionId, "demo-kai", "demo-sam");
+    expect(off.reported).toBe(false);
+    expect(off.tally.counts["demo-sam"]).toBe(1);
+  });
+
+  it("only takes reports from players, about other players, while voting is open", async () => {
+    const open = seededOpen();
+    await expect(toggleLateReport(ctx, open.sessionId, "demo-sam", "demo-sam")).rejects.toThrow(/yourself/);
+
+    const outsider =
+      ctx.members.find((m) => !open.players.includes(m.id))?.id ??
+      (await createMember({ name: "Taylor", timezone: "America/Denver" }));
+    ctx = await fresh();
+    await expect(toggleLateReport(ctx, open.sessionId, outsider, "demo-sam")).rejects.toThrow(/Only players/);
+    await expect(toggleLateReport(ctx, open.sessionId, "demo-kai", outsider)).rejects.toThrow(/weren't in/);
+
+    await expect(toggleLateReport(ctx, closedSession().sessionId, "demo-kai", "demo-sam")).rejects.toThrow(/closed/);
+    await expect(toggleLateReport(ctx, await futureSessionId(), "demo-kai", "demo-sam")).rejects.toThrow(
+      /open when the session starts/,
+    );
+  });
+
+  it("handles the Discord late buttons", async () => {
+    const db = await getDb();
+    await db.update(memberProfiles).set({ discordId: "1001" }).where(eq(memberProfiles.userId, "demo-kai"));
+    ctx = await fresh();
+    const click = async (customId: string) => {
+      const tasks: Array<() => Promise<unknown>> = [];
+      const res = await handleInteraction(
+        {
+          id: "1",
+          application_id: "app",
+          type: 3,
+          token: "token",
+          channel_id: "chan",
+          member: { user: { id: "1001", username: "kai" } },
+          data: { custom_id: customId },
+          message: { id: "msg", channel_id: "chan" },
+        },
+        (task) => tasks.push(task),
+      );
+      return { ...res, tasks };
+    };
+    const open = seededOpen();
+
+    const early = await click(`late:${await futureSessionId()}:demo-sam`);
+    expect(early).toMatchObject({ type: 4, data: { flags: 64 } });
+    expect(early.data!.content).toMatch(/open when the session starts/);
+
+    const on = await click(`late:${open.sessionId}:demo-sam`);
+    expect(on.type).toBe(7); // edits the shared message in place
+    expect(on.data!.content).toContain("counts as late");
+    expect(on.data!.components!.length).toBeGreaterThan(0);
+    expect(on.tasks.length).toBe(2); // remember the message + private confirmation
+    assertDiscordLimits(on.data!);
+
+    const off = await click(`late:${open.sessionId}:demo-sam`);
+    expect(off.type).toBe(7);
+    expect(off.data!.content).not.toContain("counts as late");
+
+    const self = await click(`late:${open.sessionId}:demo-kai`);
+    expect(self).toMatchObject({ type: 4, data: { flags: 64 } });
+    expect(self.data!.content).toMatch(/yourself/);
+
+    const closed = await click(`late:${closedSession().sessionId}:demo-sam`);
+    expect(closed.type).toBe(7);
+    expect(closed.data!.content).toContain("Late check closed");
+    expect(closed.data!.components).toEqual([]);
   });
 });

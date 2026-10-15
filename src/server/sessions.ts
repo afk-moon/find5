@@ -97,12 +97,16 @@ export async function upcomingPlanned(groupId: string, nowMs = Date.now()): Prom
   return withPlayers(rows);
 }
 
-export async function cancelSession(groupId: string, sessionId: string) {
+export async function cancelSession(groupId: string, sessionId: string, nowMs = Date.now()) {
   const db = await getDb();
-  await db
-    .update(playSessions)
-    .set({ status: "cancelled" })
+  const [session] = await db
+    .select()
+    .from(playSessions)
     .where(and(eq(playSessions.id, sessionId), eq(playSessions.groupId, groupId)));
+  if (!session) throw new Error("That session doesn't exist anymore.");
+  // Cancelled sessions drop out of the late history, so a session can't be cancelled once it has started.
+  if (session.startAt.getTime() <= nowMs) throw new Error("This session already started, so it can't be cancelled.");
+  await db.update(playSessions).set({ status: "cancelled" }).where(eq(playSessions.id, sessionId));
 }
 
 // ─── Live (spontaneous) sessions ───────────────────────────────────────────────────────────

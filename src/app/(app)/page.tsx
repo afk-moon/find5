@@ -3,9 +3,12 @@ import { cancelSessionAction, lockInAction } from "@/app/actions";
 import { ActionButton } from "@/components/ActionButton";
 import { Avatar } from "@/components/Avatar";
 import { Heatmap } from "@/components/Heatmap";
+import { LateCheck } from "@/components/LateCheck";
+import { MemberName } from "@/components/LateTag";
 import { SessionPlan, TimelineBar, WindowCard } from "@/components/WindowCard";
 import { fmtDay, fmtDuration, fmtRange, fmtTime, zoneAbbr } from "@/lib/format";
 import { requestTime, requireViewer, type GroupContext } from "@/server/context";
+import { openLateVotes } from "@/server/lateness";
 import { upcomingPlanned } from "@/server/sessions";
 import { membersNow, upcomingWindows, weekHeat, type MemberNow } from "@/server/windows";
 
@@ -17,6 +20,10 @@ export default async function WindowsPage() {
   const windows = upcomingWindows(ctx, now);
   const planned = await upcomingPlanned(ctx.group.id, now);
   const locked = new Set(planned.map((p) => p.session.startAt.getTime()));
+  // Open late checks. Sessions still in progress show theirs on their "Locked in" card; finished ones get their own card.
+  const lateChecks = new Map(openLateVotes(ctx, me.id, now).map((t) => [t.sessionId, t]));
+  const onLockedCards = new Set(planned.map((p) => p.session.id));
+  const finishedChecks = [...lateChecks.values()].filter((t) => !onLockedCards.has(t.sessionId));
 
   return (
     <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_340px]">
@@ -30,6 +37,24 @@ export default async function WindowsPage() {
           </p>
         </div>
 
+        {finishedChecks.length > 0 && (
+          <div className="space-y-2">
+            <div className="label">Late check</div>
+            {finishedChecks.map((t) => (
+              <div key={t.sessionId} className="card space-y-3">
+                <div>
+                  <div className="label">{fmtDay(t.startMs, zone)}</div>
+                  <div className="font-bold">
+                    {t.endMs ? fmtRange(t.startMs, t.endMs, zone) : fmtTime(t.startMs, zone)}{" "}
+                    <span className="text-sm font-medium text-muted">{zoneAbbr(zone, t.startMs)}</span>
+                  </div>
+                </div>
+                <LateCheck ctx={ctx} tally={t} viewerId={me.id} now={now} />
+              </div>
+            ))}
+          </div>
+        )}
+
         {planned.length > 0 && (
           <div className="space-y-2">
             <div className="label">Locked in</div>
@@ -39,11 +64,13 @@ export default async function WindowsPage() {
                 endMs: session.endAt!.getTime(),
                 pauses: session.plan?.pauses ?? [],
               };
+              const started = w.startMs <= now;
+              const late = lateChecks.get(session.id);
               return (
                 <div key={session.id} className="card space-y-3 border-free/40">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <div>
-                      <div className="label text-free">🔒 {fmtDay(w.startMs, zone)}</div>
+                      <div className="label text-free">{started ? "🟢 Playing now" : `🔒 ${fmtDay(w.startMs, zone)}`}</div>
                       <div className="text-xl font-bold">
                         {fmtRange(w.startMs, w.endMs, zone)}{" "}
                         <span className="text-sm font-medium text-muted">{zoneAbbr(zone, w.startMs)}</span>
@@ -54,17 +81,28 @@ export default async function WindowsPage() {
                         const m = ctx.byId.get(p.userId);
                         return m ? <Avatar key={p.userId} name={m.name} color={m.color} image={m.image} size={26} /> : null;
                       })}
-                      <ActionButton
-                        className="btn btn-ghost ml-2 text-xs"
-                        action={cancelSessionAction.bind(null, session.id)}
-                        confirm="Cancel this session?"
-                      >
-                        Cancel
-                      </ActionButton>
+                      {!started && (
+                        <ActionButton
+                          className="btn btn-ghost ml-2 text-xs"
+                          action={cancelSessionAction.bind(null, session.id)}
+                          confirm="Cancel this session?"
+                        >
+                          Cancel
+                        </ActionButton>
+                      )}
                     </div>
                   </div>
                   <TimelineBar {...w} />
                   <SessionPlan ctx={ctx} w={w} zone={zone} />
+                  {late ? (
+                    <LateCheck ctx={ctx} tally={late} viewerId={me.id} now={now} />
+                  ) : (
+                    !started && (
+                      <p className="text-xs text-muted">
+                        ⏰ Late check opens at {fmtTime(w.startMs, zone)}, when the session starts.
+                      </p>
+                    )
+                  )}
                 </div>
               );
             })}
@@ -146,10 +184,10 @@ function MemberStatus({ s, viewerZone, now }: { s: MemberNow; ctx: GroupContext;
     detail += ` · ${s.nextDinner.kind === "Q" ? "🍔" : "🍝"} ${fmtTime(s.nextDinner.startMs, viewerZone)}`;
   }
   return (
-    <div className="flex items-center gap-2 text-sm">
+    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
       <span className={`h-2 w-2 rounded-full ${free ? "bg-free" : eating ? "bg-quick" : "bg-line"}`} />
       <Avatar name={m.name} color={m.color} image={m.image} size={22} dim={!free} />
-      <span className="font-semibold">{m.name}</span>
+      <MemberName m={m} />
       <span className="text-xs text-muted">
         {fmtTime(now, m.timezone)} {zoneAbbr(m.timezone)}
       </span>

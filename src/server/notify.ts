@@ -5,12 +5,14 @@ import {
   lobbyMessage,
   partyFullMessage,
   plannedSessionMessage,
+  storedPlannedMessage,
   wfhDecisionMessage,
   wfhVoteMessage,
 } from "@/discord/messages";
 import { appUrl, botConfigured, createScheduledEvent, editMessage, postMessage } from "@/discord/rest";
-import type { PlayWindow } from "@/engine";
+import { lateVotingClosesAt, type PlayWindow } from "@/engine";
 import type { GroupContext } from "./context";
+import { getLateTally } from "./lateness";
 import { getSession, summarizeLive, type LiveSummary, type PlaySession } from "./sessions";
 import { getWfhState } from "./wfh";
 import { membersNow } from "./windows";
@@ -38,12 +40,13 @@ export function freeNowNotInLobby(ctx: GroupContext, lobby: Iterable<string>): s
     .map((m) => m.member.id);
 }
 
-/** Post the locked-in session (with its dinner/last-queue timeline) and create a Scheduled Event. */
+/** Post the locked-in session (with its dinner/last-queue timeline and late check) and create a Scheduled Event. */
 export function announceLockIn(ctx: GroupContext, session: PlaySession, window: PlayWindow) {
   return safely("lock-in", async () => {
     const channelId = ctx.group.discordChannelId;
     if (!channelId) return;
-    const posted = await postMessage(channelId, plannedSessionMessage(ctx, window));
+    const late = (await getLateTally(ctx.group.id, session.id))?.tally;
+    const posted = await postMessage(channelId, plannedSessionMessage(ctx, window, late));
     let eventId: string | null = null;
     if (ctx.group.discordGuildId && window.startMs > Date.now() + 60_000) {
       const event = await createScheduledEvent(ctx.group.discordGuildId, {
@@ -61,6 +64,28 @@ export function announceLockIn(ctx: GroupContext, session: PlaySession, window: 
       .set({ discordMessageId: `${channelId}:${posted.id}`, discordEventId: eventId })
       .where(eq(playSessions.id, session.id));
   });
+}
+
+/** Re-render a locked-in session's Discord message (late report counts, or the result once voting closes). */
+export function syncPlannedMessage(ctx: GroupContext, sessionId: string) {
+  return safely("planned session", async () => {
+    const found = await getLateTally(ctx.group.id, sessionId);
+    const ref = parseRef(found?.session.discordMessageId);
+    if (found && ref) await editMessage(ref.channelId, ref.messageId, storedPlannedMessage(ctx, found.session, found.tally));
+  });
+}
+
+/**
+ * Daily cron: show the result on late checks that closed recently and remove their buttons.
+ * Looks back 2 days because the cron can run up to an hour late; editing a message twice does no harm.
+ */
+export async function finishLateChecks(ctx: GroupContext, nowMs = Date.now()) {
+  const closed = ctx.lateRecords.filter((r) => {
+    const closesAt = lateVotingClosesAt(r.startMs);
+    return closesAt <= nowMs && closesAt > nowMs - 48 * 3_600_000;
+  });
+  for (const r of closed) await syncPlannedMessage(ctx, r.sessionId);
+  return closed.length;
 }
 
 /** Create or refresh the lobby message; ping the party when it just became full. */

@@ -2,6 +2,7 @@ import { liveAction, startLfgAction, type LiveAction } from "@/app/actions";
 import { ActionButton } from "@/components/ActionButton";
 import { Avatar } from "@/components/Avatar";
 import { AutoRefresh } from "@/components/client";
+import { MemberName } from "@/components/LateTag";
 import { fmtRelative, fmtTime, zoneAbbr } from "@/lib/format";
 import { requestTime, requireViewer, type MemberView } from "@/server/context";
 import { activeLive, summarizeLive } from "@/server/sessions";
@@ -117,9 +118,9 @@ export default async function LivePage() {
               {summary.eating.map((e) => {
                 const m = name(e.id);
                 return m ? (
-                  <div key={e.id} className="flex items-center gap-2 text-sm">
+                  <div key={e.id} className="flex flex-wrap items-center gap-2 text-sm">
                     <Avatar name={m.name} color={m.color} image={m.image} size={22} />
-                    <span className="font-semibold">{m.name}</span>
+                    <MemberName m={m} />
                     <span className="text-muted">
                       {e.kind === "quick" ? "🍔 quick, the party waits" : "🍝 long, find a sub"}
                       {e.backAt ? `, back ${fmtRelative(e.backAt, now)}` : ""}
@@ -139,9 +140,9 @@ export default async function LivePage() {
                 const s = statusOf.get(m.id);
                 const free = s && (s.state === "F" || s.state === "M");
                 return (
-                  <div key={m.id} className="flex items-center gap-2 text-sm">
+                  <div key={m.id} className="flex flex-wrap items-center gap-2 text-sm">
                     <Avatar name={m.name} color={m.color} image={m.image} size={22} dim={!free} />
-                    <span>{m.name}</span>
+                    <MemberName m={m} className="" />
                     <span className="text-xs text-muted">
                       {free ? "free now per their schedule" : s?.nextFreeAt ? `usually free at ${fmtTime(s.nextFreeAt, zone)}` : "busy tonight"}
                     </span>
@@ -192,7 +193,7 @@ function Group({
           return m ? (
             <span key={id} className="flex items-center gap-1.5 text-sm">
               <Avatar name={m.name} color={m.color} image={m.image} size={22} dim={dim} />
-              <span className={dim ? "text-muted" : "font-semibold"}>{m.name}</span>
+              <MemberName m={m} className={dim ? "text-muted" : "font-semibold"} />
               <span className="text-xs text-muted">{extra(id)}</span>
             </span>
           ) : null;
@@ -214,10 +215,10 @@ function StatusRow({ s, zone, now }: { s: MemberNow; zone: string; now: number }
         ? `free at ${fmtTime(s.nextFreeAt, zone)}`
         : "busy tonight";
   return (
-    <div className="flex items-center gap-2 text-sm">
+    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
       <span className={`h-2 w-2 rounded-full ${free ? "bg-free" : eating ? "bg-quick" : "bg-line"}`} />
       <Avatar name={m.name} color={m.color} image={m.image} size={22} dim={!free} />
-      <span className="font-semibold">{m.name}</span>
+      <MemberName m={m} />
       <span className="text-xs text-muted">
         {fmtTime(now, m.timezone)} {zoneAbbr(m.timezone)}
       </span>

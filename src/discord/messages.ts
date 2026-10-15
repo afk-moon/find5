@@ -1,13 +1,16 @@
-import { sessionTimeline, type Pause, type PlayWindow, type Weekday } from "@/engine";
+import { LATE_VOTING_HOURS, sessionTimeline, type Pause, type PlayWindow, type Weekday } from "@/engine";
 import { WEEKDAY_LONG, WEEKDAY_SHORT, discordTs, fmtDate, fmtDuration } from "@/lib/format";
 import type { GroupContext, MemberView } from "@/server/context";
+import type { LateTally } from "@/server/lateness";
 import type { LiveSummary, PlaySession } from "@/server/sessions";
 import type { WfhState } from "@/server/wfh";
-import type { ActionRow, DiscordMessage } from "./rest";
+import type { ActionRow, Button, DiscordMessage } from "./rest";
 
 const NO_PINGS = { parse: [] as string[] };
 
-export const mention = (m?: MemberView) => (!m ? "someone" : m.discordId ? `<@${m.discordId}>` : `**${m.name}**`);
+const LATE_TAG = " (⏰ frequently late)";
+export const mention = (m?: MemberView) =>
+  !m ? "someone" : `${m.discordId ? `<@${m.discordId}>` : `**${m.name}**`}${m.lateness.frequentlyLate ? LATE_TAG : ""}`;
 const names = (ctx: GroupContext, ids: readonly string[]) => ids.map((id) => mention(ctx.byId.get(id))).join(", ");
 export const discordIdsOf = (ctx: GroupContext, ids: readonly string[]) =>
   ids.map((id) => ctx.byId.get(id)?.discordId).filter((d): d is string => !!d);
@@ -36,9 +39,47 @@ export function windowsMessage(ctx: GroupContext, windows: PlayWindow[], url: st
   };
 }
 
+/** Late-check lines + "<name> was late" buttons for a locked-in session. */
+function lateSection(ctx: GroupContext, late: LateTally): { lines: string[]; rows: ActionRow[] } {
+  const nameOf = (id: string) => ctx.byId.get(id)?.name ?? "someone";
+  const reported = Object.entries(late.counts).sort((a, b) => b[1] - a[1]);
+  const lines: string[] = [];
+  if (late.voting === "not-started") {
+    // Worded so it still reads right after the start time (this message isn't edited when voting opens).
+    lines.push(
+      `🕒 Late check opens at ${discordTs(late.startMs)} for ${LATE_VOTING_HOURS}h. If someone shows up late, tap their name. It counts with ${late.needed}+ reports, and reports are anonymous.`,
+    );
+  } else if (late.voting === "open") {
+    lines.push(
+      `🕒 **Late check is open** (closes ${discordTs(late.closesAt, "R")}). Tap a name if they were late. It counts with ${late.needed}+ reports, and reports are anonymous.`,
+    );
+    if (reported.length) {
+      lines.push(
+        `Reports so far: ${reported.map(([id, n]) => `**${nameOf(id)}** ×${n}${n >= late.needed ? " (counts as late)" : ""}`).join(", ")}`,
+      );
+    }
+  } else {
+    const wasLate = reported.filter(([, n]) => n >= late.needed).map(([id]) => `**${nameOf(id)}**`);
+    lines.push(`🕒 Late check closed. ${wasLate.length ? `Late: ${wasLate.join(", ")}` : "Everyone was on time 🎉"}`);
+  }
+
+  const rows: ActionRow[] = [];
+  if (late.voting !== "closed") {
+    const buttons: Button[] = late.players.map((id) => ({
+      type: 2,
+      style: (late.counts[id] ?? 0) >= late.needed ? 4 : 2,
+      label: `${nameOf(id).slice(0, 60)} was late`,
+      custom_id: `late:${late.sessionId}:${id}`,
+    }));
+    for (let i = 0; i < buttons.length && rows.length < 5; i += 5) rows.push({ type: 1, components: buttons.slice(i, i + 5) });
+  }
+  return { lines, rows };
+}
+
 export function plannedSessionMessage(
   ctx: GroupContext,
   s: { startMs: number; endMs: number; pauses: Pause[]; party: string[] },
+  late?: LateTally | null,
 ): DiscordMessage {
   const lines = sessionTimeline(s, ctx.group.matchLengthMinutes).flatMap((e) => {
     switch (e.kind) {
@@ -54,14 +95,31 @@ export function plannedSessionMessage(
         return [];
     }
   });
+  const lateBits = late ? lateSection(ctx, late) : { lines: [], rows: [] };
   return {
     content: [
       `🔒 **Locked in:** ${discordTs(s.startMs, "F")} (${discordTs(s.startMs, "R")})`,
       `Party: ${names(ctx, s.party)}`,
       ...lines,
+      ...lateBits.lines,
     ].join("\n"),
+    components: lateBits.rows,
     allowed_mentions: { users: discordIdsOf(ctx, s.party) },
   };
+}
+
+/** The locked-in message for a saved session (its players are the party), with the current late check. */
+export function storedPlannedMessage(ctx: GroupContext, session: PlaySession, late: LateTally): DiscordMessage {
+  return plannedSessionMessage(
+    ctx,
+    {
+      startMs: late.startMs,
+      endMs: late.endMs ?? late.startMs,
+      pauses: session.plan?.pauses ?? [],
+      party: late.players,
+    },
+    late,
+  );
 }
 
 export function lobbyMessage(

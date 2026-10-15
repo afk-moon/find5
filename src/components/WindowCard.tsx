@@ -2,6 +2,7 @@ import { sessionTimeline, type Pause, type PlayWindow } from "@/engine";
 import { fmtDay, fmtDuration, fmtRange, fmtTime, zoneAbbr } from "@/lib/format";
 import type { GroupContext } from "@/server/context";
 import { Avatar } from "./Avatar";
+import { LateTag } from "./LateTag";
 
 /** Play (green) and dinner-pause (orange) segments across the window. */
 export function TimelineBar({ startMs, endMs, pauses }: { startMs: number; endMs: number; pauses: Pause[] }) {
@@ -100,6 +101,11 @@ export function WindowCard({
               <Avatar name={m.name} color={m.color} image={m.image} size={24} />
               <span>
                 <span className="font-semibold">{m.name}</span>{" "}
+                {m.lateness.frequentlyLate && (
+                  <>
+                    <LateTag stats={m.lateness} />{" "}
+                  </>
+                )}
                 <span className="text-muted">
                   {fmtRange(w.startMs, w.endMs, m.timezone)} {zoneAbbr(m.timezone, w.startMs)}
                 </span>

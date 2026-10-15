@@ -1,5 +1,6 @@
 import { saveSettingsAction } from "@/app/actions";
 import { Avatar } from "@/components/Avatar";
+import { MemberName } from "@/components/LateTag";
 import { appUrl, botConfigured } from "@/discord/rest";
 import { WEEKDAY_LONG, zoneAbbr } from "@/lib/format";
 import { US_TIMEZONES } from "@/lib/zones";
@@ -106,9 +107,9 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
         <div className="card space-y-2">
           <div className="label">Members ({ctx.members.length})</div>
           {ctx.members.map((m) => (
-            <div key={m.id} className="flex items-center gap-2 text-sm">
+            <div key={m.id} className="flex flex-wrap items-center gap-2 text-sm">
               <Avatar name={m.name} color={m.color} image={m.image} size={22} />
-              <span className="font-semibold">{m.name}</span>
+              <MemberName m={m} />
               <span className="chip">{zoneAbbr(m.timezone)}</span>
               {m.workStyle === "hybrid" && <span className="chip">🏠 hybrid</span>}
               <span className="ml-auto text-xs text-muted">{m.discordId ? "Discord ✓" : "no Discord"}</span>

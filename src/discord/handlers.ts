@@ -2,7 +2,9 @@ import { eq } from "drizzle-orm";
 import { getDb } from "@/db";
 import { groups, playSessions, wfhVotes } from "@/db/schema";
 import type { Weekday } from "@/engine";
+import { discordTs } from "@/lib/format";
 import { loadGroupContext, type GroupContext, type MemberView } from "@/server/context";
+import { getLateTally, toggleLateReport } from "@/server/lateness";
 import { freeNowNotInLobby, syncLobby } from "@/server/notify";
 import {
   activeLive,
@@ -14,7 +16,7 @@ import {
 } from "@/server/sessions";
 import { clearBallot, ensureVote, getWfhState, toggleBallotDay, weekStartOf } from "@/server/wfh";
 import { upcomingWindows } from "@/server/windows";
-import { lobbyMessage, partyFullMessage, windowsMessage, wfhVoteMessage } from "./messages";
+import { lobbyMessage, partyFullMessage, storedPlannedMessage, windowsMessage, wfhVoteMessage } from "./messages";
 import { appUrl, postFollowup, type DiscordMessage } from "./rest";
 
 interface DiscordUser {
@@ -191,6 +193,37 @@ async function onButton(i: Interaction, ctx: GroupContext, me: MemberView, defer
     if (b === "none") await clearBallot(ctx, weekStart, me.id);
     else await toggleBallotDay(ctx, weekStart, me.id, Number(b) as Weekday);
     return update(wfhVoteMessage(ctx, await getWfhState(ctx, weekStart), appUrl()));
+  }
+
+  if (kind === "late") {
+    const sessionId = a;
+    const lateUserId = b;
+    const found = await getLateTally(ctx.group.id, sessionId, me.id);
+    if (!found) return ephemeral("That session isn't available anymore.");
+    if (found.tally.voting === "not-started") {
+      return ephemeral(`⏰ Late reports open when the session starts (${discordTs(found.tally.startMs, "R")}).`);
+    }
+    // Remember this message so reports made in the web app refresh it too.
+    if (!found.session.discordMessageId && i.message) {
+      const ref = `${i.message.channel_id}:${i.message.id}`;
+      defer(() => getDb().then((db) => db.update(playSessions).set({ discordMessageId: ref }).where(eq(playSessions.id, sessionId))));
+    }
+    // The shared message only ever shows counts; the clicker gets a private confirmation.
+    const whisper = (content: string) =>
+      defer(() => postFollowup(i.application_id, i.token, { content, flags: EPHEMERAL, allowed_mentions: { parse: [] } }));
+    if (found.tally.voting === "closed") {
+      whisper("Late reports for this session are closed.");
+      return update(storedPlannedMessage(ctx, found.session, found.tally)); // shows the result and drops the buttons
+    }
+    const { reported, tally } = await toggleLateReport(ctx, sessionId, me.id, lateUserId);
+    const name = ctx.byId.get(lateUserId)?.name ?? "them";
+    const n = tally.counts[lateUserId] ?? 0;
+    whisper(
+      reported
+        ? `⏰ You reported **${name}** as late (${n} of ${tally.needed} reports needed${n >= tally.needed ? ", so it counts" : ""}). Only you can see this. Tap again to undo.`
+        : `↩️ Took back your late report for **${name}**.`,
+    );
+    return update(storedPlannedMessage(ctx, found.session, tally));
   }
 
   return ephemeral("Unknown button.");

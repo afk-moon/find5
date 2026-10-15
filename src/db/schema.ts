@@ -226,3 +226,21 @@ export const playSessionPlayers = pgTable(
   },
   (t) => [primaryKey({ columns: [t.sessionId, t.userId] })],
 );
+
+/** "X was late" reports on locked-in sessions. Shown only as counts, so reporters stay anonymous. */
+export const lateReports = pgTable(
+  "late_reports",
+  {
+    sessionId: text("session_id")
+      .notNull()
+      .references(() => playSessions.id, { onDelete: "cascade" }),
+    reporterId: text("reporter_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    lateUserId: text("late_user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    createdAt: createdAt(),
+  },
+  (t) => [primaryKey({ columns: [t.sessionId, t.reporterId, t.lateUserId] })],
+);
