@@ -1,104 +1,259 @@
 # FiveStack
 
 Find times when a full Valorant party (5 people, or any size you set) can play across US time zones. It
-plans around dinner and helps hybrid workers line up their work-from-home days. It's a web app plus a
-Discord bot.
+plans around dinner and helps hybrid workers line up their work-from-home days. It's a web app plus an
+optional Discord bot.
 
-## Quick start
+- **Windows:** the best times this week when the same 5 people are free, shown in your own time zone.
+- **Dinner-aware:** a 🍔 quick dinner pauses the party; a 🍝 long dinner splits the session.
+- **WFH sync:** hybrid members vote on a shared work-from-home day that unlocks the most play time.
+- **Live lobby:** “who's on right now?” with I'm in / in 15 min / dinner / back.
+- **Discord:** login, slash commands, lobby buttons, announcements, and Scheduled Events.
+
+---
+
+## Run it locally
+
+Running locally needs only Node.js. There's no database server, Docker, or account to set up. The app
+ships with an embedded Postgres and five demo friends to play with.
+
+### 1. Install the prerequisites
+
+You need **Node.js 20.9 or newer**, on an LTS (even-numbered) version: 20, 22, or 24. **24 is
+recommended.** npm comes with Node. You also need **Git** to clone the repo (or use GitHub's “Download
+ZIP”).
+
+<details open>
+<summary><b>Windows</b></summary>
+
+1. Install Node.js LTS from <https://nodejs.org> (the big “LTS” button), or in PowerShell:
+   ```powershell
+   winget install OpenJS.NodeJS.LTS
+   ```
+2. Install Git from <https://git-scm.com/download/win>, or `winget install Git.Git`.
+3. **Close and reopen** your terminal (PowerShell or Windows Terminal) so it picks up `node` and `git`.
+
+</details>
+
+<details open>
+<summary><b>macOS</b></summary>
+
+Using nvm (no admin rights needed):
 
 ```bash
-npm run dev          # http://localhost:3000
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.8/install.sh | bash
+# open a NEW terminal window, then:
+nvm install 24
 ```
 
-Pick one of the five demo friends on the login page. Data lives in an embedded Postgres under `.data/`, so
-there's no database server and no accounts to set up. Run `npm run db:reset` to start over. On a fresh
-machine, run `npm install` first. This repo pins exact versions; see `.npmrc`.
+Alternatives: the installer from <https://nodejs.org>, or `brew install node@24` with Homebrew. Git
+comes with Apple's command line tools: run `xcode-select --install` if `git --version` doesn't work.
+
+</details>
+
+<details open>
+<summary><b>Linux</b></summary>
+
+Use nvm (distro packages are often too old):
+
+```bash
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.8/install.sh | bash
+# open a NEW terminal, then:
+nvm install 24
+```
+
+Install Git with your package manager, e.g. `sudo apt install git`.
+
+</details>
+
+Check that everything is there:
+
+```bash
+node -v   # v20.9.0 or newer (v24.x recommended)
+npm -v
+git --version
+```
+
+### 2. Get the code
+
+```bash
+git clone https://github.com/afk-moon/find5.git
+cd find5
+```
+
+If you used nvm, run `nvm use` in this folder. It reads `.nvmrc` and switches to Node 24.
+
+### 3. Install the dependencies
+
+```bash
+npm install
+```
+
+This installs everything in `package.json` at the exact versions pinned in `package-lock.json`: Next.js,
+React, Tailwind CSS, Drizzle ORM, the embedded Postgres (PGlite), Luxon, Vitest, ESLint, and TypeScript.
+It takes a minute or two. The `.npmrc` file in the repo is required, so keep it: it stops npm from
+pulling in optional database drivers that conflict.
+
+### 4. Start the app
+
+```bash
+npm run dev
+```
+
+Open **<http://localhost:3000>** and click one of the demo friends (Maya, Dev, Rosa, Kai, Sam), or join as
+yourself. The first page load takes a few seconds: the app creates its database in `.data/` and fills it
+with demo data. Stop the server with **Ctrl+C**.
+
+Things to try:
+
+- Switch between friends to see times in different zones.
+- Paint your week on **My availability**.
+- Lock in a window.
+- Open a **Live** lobby.
+- Vote on **WFH sync** as Maya or Kai (they're the hybrid workers).
+
+### 5. (Optional) Settings
+
+Nothing is required locally. To change defaults, copy the template and edit it:
+
+```bash
+cp .env.example .env.local              # macOS / Linux
+Copy-Item .env.example .env.local       # Windows PowerShell
+```
+
+Restart `npm run dev` after editing. Each variable is explained in `.env.example`. For example,
+`SEED_DEMO=0` starts with an empty group instead of the demo friends. Run `npm run db:reset` first if
+you've already started the app once.
+
+### Commands
 
 | Command | What it does |
 |---|---|
-| `npm run dev` / `build` / `start` | Next.js dev server / production build / serve the build |
-| `npm test` | Engine and integration tests (Vitest) |
-| `npm run typecheck` / `npm run lint` | TypeScript / ESLint |
-| `npm run db:generate` | New SQL migration after editing `src/db/schema.ts` |
-| `npm run db:reset` | Delete the local database (it re-seeds demo data on the next start) |
+| `npm run dev` | Start the dev server at <http://localhost:3000> (reloads on code changes) |
+| `npm test` | Run the tests: scheduling engine plus full flows against a temporary database |
+| `npm run lint` / `npm run typecheck` | ESLint / TypeScript checks |
+| `npm run build` then `npm start` | Production build and server. Demo login is off in production; add `ALLOW_DEV_LOGIN=1` to `.env.local` to try it locally |
+| `npm run db:reset` | Delete the local database. It's recreated, with fresh demo data, on the next start |
+| `npm run db:generate` | Create a SQL migration after editing `src/db/schema.ts` |
+| `npm run discord:register` | Register the Discord slash commands (see [Discord setup](#discord-setup)) |
 
-Set `SEED_DEMO=0` in `.env.local` to start with an empty group instead of the demo friends.
+### Troubleshooting
+
+- **`node` or `npm` not found, or “Unsupported engine”:** install or upgrade Node (step 1), then open a
+  new terminal. With nvm, run `nvm use` in the project folder.
+- **`npm install` fails with `ERESOLVE` peer-dependency errors:** the hidden `.npmrc` file is missing.
+  Restore it from the repo, or run `npm install --legacy-peer-deps`.
+- **Port 3000 is already in use:** run `npm run dev -- -p 3001` and open <http://localhost:3001>. If you
+  use Discord, update `APP_URL` too.
+- **Database errors after pulling new changes, or you want fresh demo data:** run `npm run db:reset`,
+  then start again.
+- **Company laptop with a private npm registry:** nothing to change. The lockfile uses public npm URLs,
+  and npm automatically swaps in your configured registry.
+
+---
 
 ## How it works
 
-**Availability.** Each person paints a typical week in their own time. A "gaming day" runs 8am to 4am, so
-1am still counts as "tonight". Brushes:
+**Availability.** Each person paints a typical week in their own time. A “gaming day” runs 8am to 4am,
+so 1am still counts as “tonight”. Brushes:
 
 - ✅ free
 - 🤷 if needed
 - 🍔 quick dinner
 - 🍝 long dinner
 
-Times are stored as local time plus an IANA zone (`America/Chicago`, never "CST") and converted to UTC
-day by day. Daylight saving changes (e.g. Nov 1) and Arizona (no DST) are handled correctly. One-off
-days ("busy this Friday") override the typical week.
+Times are stored as local time plus a named time zone (`America/Chicago`, never “CST”) and converted
+day by day. Daylight saving changes and Arizona (which skips DST) are handled. One-off days (“busy this
+Friday”) override the typical week.
 
 **Matching.** The app scans 30-minute slots for windows where the *same* 5 people are around the whole
 time. Five people free in every slot isn't enough if they're different people. Extra people show up as
-subs. Windows are ranked by play time, then fewer pauses, more subs, and fewer "if needed" players.
+subs. Windows are ranked by play time, then fewer pauses, more subs, and fewer “if needed” players.
 
 **Dinner.**
 - **Quick dinner** (up to 30 min, configurable): the party pauses and continues. Back-to-back dinners
-  that add up past the limit count as long. A sub can cover a quick dinner, so there's no pause.
+  that add up past the limit count as long. A free sub covers a quick dinner, so there's no pause.
 - **Long dinner**: the session splits into before and after.
-- Session plans include a "⏰ last comp queue" time: dinner time minus a ~40 min match.
+- Session plans include a “⏰ last comp queue” time: dinner time minus a ~40 min match.
 
 **Hybrid WFH sync.**
 - Hybrid members mark each weekday as Office, Flexible, or Always WFH. They also paint a WFH-day
   pattern (usually an earlier start) and can say how late they can stay up the night before a WFH day.
 - Each week they vote on flexible days. The day the most hybrid members can share wins. Ties go to the
   day that unlocks the most extra 5-stack time.
-- Winning days become WFH dates, so everyone's windows recalculate automatically.
+- Winning days become WFH dates, and everyone's windows recalculate.
 
-**Live lobby.** For spontaneous games, `/lfg` (or the Live page) opens a lobby: I'm in · In 15 min · Not
-tonight · 🍔/🍝 dinner · I'm back · Leaving. It pings whoever is free right now and pings the party when
-it fills up.
+**Live lobby.** `/lfg` in Discord, or the **Live** page, opens a lobby. It pings whoever is free right
+now, tracks quick and long dinners with “back in…” countdowns, and pings the party when it's full.
+
+---
 
 ## Discord setup
 
-Discord login, slash commands, and announcements use only Node built-ins, so there's no extra SDK.
+The website works fine without Discord. Discord adds login, pings, slash commands, and announcements,
+using Node built-ins only, so there's nothing extra to install.
 
 1. Create an application at <https://discord.com/developers/applications>.
 2. Copy these into `.env.local` (template: `.env.example`):
    - **General Information**: Application ID → `DISCORD_APPLICATION_ID`; Public Key → `DISCORD_PUBLIC_KEY`
    - **Bot**: Reset Token → `DISCORD_BOT_TOKEN`
-   - **OAuth2**: Client Secret → `DISCORD_CLIENT_SECRET`; add the redirect
-     `<APP_URL>/api/auth/discord/callback` (locally `http://localhost:3000/api/auth/discord/callback`)
+   - **OAuth2**: Client Secret → `DISCORD_CLIENT_SECRET`
    - `AUTH_SECRET`: any long random string
+   - Optional: `DISCORD_GUILD_ID`, your server's ID (makes slash commands appear instantly)
 3. **Invite the bot**: OAuth2 → URL Generator → scopes `bot` and `applications.commands`. Permissions:
-   View Channels, Send Messages, Read Message History, Create Events, Manage Events.
-4. **Register slash commands**: `node --env-file=.env.local scripts/register-commands.mjs`. Set
-   `DISCORD_GUILD_ID` to make them appear in your server instantly.
-5. **Interactions Endpoint URL** (General Information): `<APP_URL>/api/discord/interactions`. Discord
-   needs a public HTTPS URL. Deploy (below) or use a tunnel to `localhost:3000`.
-6. Everyone clicks **Log in with Discord** once, so the bot can map Discord users to members. The first
-   time someone uses a command in your server, that server and channel become the group's announcement
-   channel (you can change them in Settings).
+   View Channels, Send Messages, Read Message History, Create Events, Manage Events. Open the generated
+   URL and add the bot to your server.
+4. **Register slash commands**: `npm run discord:register`
+5. **Give Discord a public URL.** Discord has to reach your app over HTTPS, so `localhost` won't work.
+   - **Testing from your computer:** run a tunnel such as `cloudflared tunnel --url http://localhost:3000`
+     or `ngrok http 3000`. Set `APP_URL` in `.env.local` to the tunnel's https URL and restart
+     `npm run dev`. Quick tunnels get a new URL each run.
+   - **Long-term:** [deploy it](#deploying).
+6. In the developer portal, using your public URL:
+   - **General Information → Interactions Endpoint URL:** `<APP_URL>/api/discord/interactions`.
+     Discord sends a test request when you save, and the app answers it.
+   - **OAuth2 → Redirects:** `<APP_URL>/api/auth/discord/callback`
+7. Everyone opens the site and clicks **Log in with Discord** once, so the bot can match Discord users to
+   members. The first time someone uses a command in your server, that channel becomes the announcement
+   channel (you can change it in **Settings**).
 
-Commands: `/windows`, `/lfg`, `/dinner quick|long`, `/back`, `/wfh [this|next]`. Locking in a window
-posts the plan and creates a Discord Scheduled Event; Discord notifies everyone who taps "Interested".
+Commands:
 
-## Deploying (e.g. Vercel + Supabase/Neon)
+- `/windows`: best times this week
+- `/lfg`: open a lobby
+- `/dinner quick|long`
+- `/back`
+- `/wfh [this|next]`: post the WFH vote
 
-- Set `DATABASE_URL` to a hosted Postgres. Migrations in `drizzle/` run on the first request.
-- Also set `APP_URL`, `AUTH_SECRET`, `CRON_SECRET`, and the Discord variables.
-- `vercel.json` runs `/api/cron/daily` once a day. It opens next week's WFH vote on the group's "open"
-  weekday (Thu by default) and decides it on the "close" weekday (Fri).
-- Demo login is off in production unless `ALLOW_DEV_LOGIN=1`.
+Locking in a window posts the plan and creates a Discord Scheduled Event; Discord notifies everyone who
+taps “Interested”.
+
+---
+
+## Deploying
+
+This works on any Node host. With Vercel plus a hosted Postgres (Supabase, Neon, …):
+
+1. Import the GitHub repo in Vercel.
+2. Set environment variables: `DATABASE_URL` (your Postgres connection string), `APP_URL` (your site's
+   URL), `AUTH_SECRET`, `CRON_SECRET`, and the Discord variables above.
+3. Deploy. Migrations in `drizzle/` run automatically on the first request. Set `SEED_DEMO=1` once if
+   you want the demo friends in the hosted database.
+
+`vercel.json` runs `/api/cron/daily` once a day. It opens next week's WFH vote on the group's “open”
+weekday (Thu by default) and decides it on the “close” weekday (Fri). Demo login is off in production
+unless `ALLOW_DEV_LOGIN=1`.
+
+---
 
 ## Project layout
 
 ```
-src/engine/     Pure TypeScript scheduling engine: time zones/DST, quorum matcher, dinners, WFH planner (+ tests)
-src/db/         Drizzle schema, embedded-Postgres/Postgres client, demo seed
-src/server/     Services shared by the web app and the bot: windows, sessions, WFH votes, availability, Discord sync
-src/discord/    Signature verification, REST client, message builders, slash command and button handlers
-src/app/        Next.js pages (Windows, Live, My availability, WFH sync, Settings, Login), server actions, API routes
-scripts/        register-commands.mjs
+src/engine/     Scheduling engine (pure TypeScript): time zones/DST, matching, dinners, WFH planner, plus tests
+src/db/         Database schema (Drizzle), embedded-Postgres/Postgres client, demo data
+src/server/     Logic shared by the website and the bot: windows, sessions, WFH votes, availability, Discord sync
+src/discord/    Discord request verification, REST client, message builders, command and button handlers
+src/app/        Next.js pages (Windows, Live, My availability, WFH sync, Settings, Login), actions, API routes
+scripts/        register-commands.mjs (Discord slash commands)
 drizzle/        SQL migrations
 ```
