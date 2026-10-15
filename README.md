@@ -296,6 +296,11 @@ connecting it.
 weekday (Thu by default) and decides it on the “close” weekday (Fri). It also updates the Discord posts of
 late checks that have closed, showing who was late and removing the buttons.
 
+`vercel.json` also runs the app in Portland (`"regions": ["pdx1"]`), next to the Neon database. Every page
+waits on the database, so the app should run in the same region as it. If your database is somewhere
+else, change `regions` to the matching [Vercel region](https://vercel.com/docs/regions) (e.g. `iad1` for
+Washington, D.C.). A Neon database's region can't be changed after it's created.
+
 ---
 
 ## Project layout
