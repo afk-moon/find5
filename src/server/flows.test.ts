@@ -285,6 +285,7 @@ describe("/back with a time", () => {
     const now = at("2031-03-04T18:10");
     expect(resolveBackTime("9", now, zone())).toEqual({ backMs: at("2031-03-04T21:00"), now: false });
     expect(resolveBackTime("930", now, zone())).toEqual({ backMs: at("2031-03-04T21:30"), now: false });
+    expect(resolveBackTime("10", at("2031-03-04T17:10"), zone())).toEqual({ backMs: at("2031-03-04T22:00"), now: false });
     expect(resolveBackTime("now", now, zone())).toEqual({ backMs: at("2031-03-04T18:00"), now: true });
     expect(resolveBackTime("now", at("2031-03-04T06:00"), zone())).toEqual({ backMs: at("2031-03-04T06:00"), now: true });
     expect(() => resolveBackTime("banana", now, zone())).toThrow(/couldn't read/);
@@ -376,7 +377,7 @@ describe("/back with a time", () => {
     expect(await back("banana")).toMatch(/couldn't read “banana”/);
     expect(await back("4:30am")).toMatch(/between 8am and 4am/);
     expect(await back("4:30am", "time")).toMatch(/between 8am and 4am/); // the option's old name still works
-    expect(await back()).toMatch(/\/back 9pm/); // old /back with no time, and no lobby open
+    expect(await back()).toMatch(/out of date[\s\S]*npm run discord:register/); // Discord's old /back dropped the time
   });
 });
 

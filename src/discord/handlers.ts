@@ -139,20 +139,19 @@ async function onCommand(i: Interaction, ctx: GroupContext, me: MemberView, defe
         if (lobby) defer(() => syncLobby(ctx, lobby.sessionId, lobby.before));
         return ephemeral(awayMessage(away, me.timezone, appUrl()));
       }
+      // The time is required on /back now, so a /back without one comes from Discord's old copy of the
+      // command. That copy drops anything typed after "/back", so say why the time didn't come through.
+      const stale =
+        "Discord's copy of /back is out of date, so it didn't send a time. Reload Discord (Ctrl+R, or restart " +
+        "the app). If the time box still doesn't appear, run `npm run discord:register` again.";
       const live = await activeLive(ctx.group.id);
-      if (!live) {
-        return ephemeral(
-          i.data?.name === "back"
-            ? "No lobby is open. Start one with /lfg, or say when you'll be free with /back 9pm."
-            : "No lobby is open. Start one with /lfg.",
-        );
-      }
+      if (!live) return ephemeral(i.data?.name === "back" ? `⚠️ ${stale}` : "No lobby is open. Start one with /lfg.");
       const before = summarizeLive(ctx.group.partySize, live.players).state;
       const kind = option("kind") === "long" ? "long" : "quick";
       if (i.data?.name === "dinner") await goToDinner(ctx, live.session.id, me.id, kind);
       else await setPlayerStatus(ctx, live.session.id, me.id, "in");
       defer(() => syncLobby(ctx, live.session.id, before));
-      if (i.data?.name === "back") return ephemeral("Welcome back! 🎮");
+      if (i.data?.name === "back") return ephemeral(`Welcome back! 🎮\n-# Meant to give a time? ${stale}`);
       return ephemeral(
         kind === "quick"
           ? `🍔 Enjoy! The party will wait about ${ctx.group.maxPauseMinutes} min.`
