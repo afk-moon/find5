@@ -262,7 +262,10 @@ Commands:
 - `/back now`: back from dinner (puts you in the open lobby), or free from now if your schedule said busy
 - `/wfh [this|next]`: post the WFH vote
 
-After changing commands (for example, after updating the app), run `npm run discord:register` again.
+After changing commands (for example, after updating the app), run `npm run discord:register` again, from
+the updated code. It lists what Discord saved, for example `/back at`. If you then still see the old version
+in Discord, reload it (Ctrl+R, or restart the phone app). If it warns that older global commands exist
+(each command shows up twice), run `npm run discord:register -- --remove-global`.
 
 Locking in a window posts the plan and creates a Discord Scheduled Event; Discord notifies everyone who
 taps “Interested”. The post also has a “*name* was late” button for each player. These work once the

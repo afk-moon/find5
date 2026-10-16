@@ -62,16 +62,34 @@ const commands = [
   },
 ];
 
-const url = guildId
-  ? `https://discord.com/api/v10/applications/${appId}/guilds/${guildId}/commands`
-  : `https://discord.com/api/v10/applications/${appId}/commands`;
-const res = await fetch(url, {
+const api = `https://discord.com/api/v10/applications/${appId}`;
+const headers = { Authorization: `Bot ${token}`, "Content-Type": "application/json" };
+const res = await fetch(guildId ? `${api}/guilds/${guildId}/commands` : `${api}/commands`, {
   method: "PUT",
-  headers: { Authorization: `Bot ${token}`, "Content-Type": "application/json" },
+  headers,
   body: JSON.stringify(commands),
 });
-if (res.ok) console.log(`✅ Registered ${commands.length} commands ${guildId ? "in your server" : "globally"}.`);
-else {
+if (!res.ok) {
   console.error(`❌ ${res.status} ${await res.text()}`);
   process.exit(1);
+}
+// List what Discord actually saved, options included (e.g. "/back at"), so it's clear which version ran.
+const saved = await res.json();
+const describe = (c) => `/${[c.name, ...(c.options ?? []).map((o) => o.name)].join(" ")}`;
+console.log(`✅ Registered ${saved.length} commands ${guildId ? "in your server" : "globally"}: ${saved.map(describe).join(", ")}`);
+
+// Commands registered globally before (without DISCORD_GUILD_ID) show up as a second, older copy of each.
+if (guildId) {
+  if (process.argv.includes("--remove-global")) {
+    const removed = await fetch(`${api}/commands`, { method: "PUT", headers, body: "[]" });
+    console.log(removed.ok ? "🧹 Removed the old global copies." : `❌ Couldn't remove global commands: ${removed.status}`);
+  } else {
+    const global = await fetch(`${api}/commands`, { headers }).then((r) => (r.ok ? r.json() : []));
+    if (global.length) {
+      console.log(
+        `⚠️ ${global.length} older global commands also exist, so Discord shows each command twice. ` +
+          "Remove them with: npm run discord:register -- --remove-global",
+      );
+    }
+  }
 }
