@@ -2,7 +2,7 @@ import { asc, eq, inArray } from "drizzle-orm";
 import { redirect } from "next/navigation";
 import { cache } from "react";
 import { getDb } from "@/db";
-import { dayPatterns, groups, hybridDays, memberProfiles, memberships, user, wfhDays } from "@/db/schema";
+import { dayPatterns, groups, hybridDays, memberProfiles, memberships, user, vacations, wfhDays } from "@/db/schema";
 import { NO_LATE_STATS, lateStats, type LateStats } from "@/engine/lateness";
 import type { HybridMode, MatchSettings, MemberInput, Weekday } from "@/engine/types";
 import { getSessionUserId } from "./auth";
@@ -29,6 +29,8 @@ export interface MemberView {
   /** Raw stored patterns by key ("w1"…"w7", "wfh", "d:YYYY-MM-DD"). */
   patterns: Record<string, string>;
   wfhDates: string[];
+  /** Time away, earliest first ("YYYY-MM-DD" local days, inclusive). */
+  vacations: Array<{ id: string; start: string; end: string }>;
   /** Late history over their recent locked-in sessions (drives the "frequently late" tag). */
   lateness: LateStats;
 }
@@ -59,7 +61,7 @@ export async function loadGroupContext(groupId: string): Promise<GroupContext> {
   const now = Date.now();
   // Everything in one parallel round trip: per-member tables filter by the group's members via a subquery.
   const memberIds = () => db.select({ id: memberships.userId }).from(memberships).where(eq(memberships.groupId, groupId));
-  const [[group], rows, patternRows, hybridRows, wfhRows, lateRecords] = await Promise.all([
+  const [[group], rows, patternRows, hybridRows, wfhRows, vacationRows, lateRecords] = await Promise.all([
     db.select().from(groups).where(eq(groups.id, groupId)),
     db
       .select({
@@ -81,6 +83,7 @@ export async function loadGroupContext(groupId: string): Promise<GroupContext> {
     db.select().from(dayPatterns).where(inArray(dayPatterns.userId, memberIds())),
     db.select().from(hybridDays).where(inArray(hybridDays.userId, memberIds())),
     db.select().from(wfhDays).where(inArray(wfhDays.userId, memberIds())),
+    db.select().from(vacations).where(inArray(vacations.userId, memberIds())).orderBy(asc(vacations.startDate)),
     loadLateRecords(groupId, now),
   ]);
   if (!group) throw new Error(`Group ${groupId} not found`);
@@ -103,6 +106,9 @@ export async function loadGroupContext(groupId: string): Promise<GroupContext> {
       ) as Partial<Record<Weekday, HybridMode>>,
       patterns: Object.fromEntries(patternRows.filter((p) => p.userId === r.id).map((p) => [p.key, p.cells])),
       wfhDates: wfhRows.filter((w) => w.userId === r.id).map((w) => w.date),
+      vacations: vacationRows
+        .filter((v) => v.userId === r.id)
+        .map((v) => ({ id: v.id, start: v.startDate, end: v.endDate })),
       lateness: late.get(r.id) ?? NO_LATE_STATS,
     };
   });
@@ -138,6 +144,7 @@ export function toEngineInput(m: MemberView): MemberInput {
     hybridDays: hybrid ? m.hybridDays : undefined,
     wfhDates: hybrid ? new Set(m.wfhDates) : undefined,
     nightBeforeWfhUntil: hybrid ? m.nightBeforeWfhUntil : null,
+    vacations: m.vacations,
   };
 }
 

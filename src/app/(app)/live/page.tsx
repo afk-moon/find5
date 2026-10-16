@@ -3,7 +3,8 @@ import { ActionButton } from "@/components/ActionButton";
 import { Avatar } from "@/components/Avatar";
 import { AutoRefresh } from "@/components/client";
 import { MemberName } from "@/components/LateTag";
-import { fmtRelative, fmtTime, zoneAbbr } from "@/lib/format";
+import { currentGamingDay, vacationOn } from "@/engine";
+import { fmtDate, fmtRelative, fmtTime, zoneAbbr } from "@/lib/format";
 import { requestTime, requireMember, requireViewer, type MemberView } from "@/server/context";
 import { activeLive, summarizeLive } from "@/server/sessions";
 import { membersNow, type MemberNow } from "@/server/windows";
@@ -147,12 +148,19 @@ export default async function LivePage() {
               {waiting.map((m) => {
                 const s = statusOf.get(m.id);
                 const free = s && (s.state === "F" || s.state === "M");
+                const away = vacationOn(m, currentGamingDay(now, m.timezone));
                 return (
                   <div key={m.id} className="flex flex-wrap items-center gap-2 text-sm">
                     <Avatar name={m.name} color={m.color} image={m.image} size={22} dim={!free} />
                     <MemberName m={m} className="" />
                     <span className="text-xs text-muted">
-                      {free ? "free now per their schedule" : s?.nextFreeAt ? `usually free at ${fmtTime(s.nextFreeAt, zone)}` : "busy tonight"}
+                      {away
+                        ? `🏖️ on vacation until ${fmtDate(away.end)}`
+                        : free
+                          ? "free now per their schedule"
+                          : s?.nextFreeAt
+                            ? `usually free at ${fmtTime(s.nextFreeAt, zone)}`
+                            : "busy tonight"}
                     </span>
                   </div>
                 );
@@ -215,13 +223,16 @@ function StatusRow({ s, zone, now }: { s: MemberNow; zone: string; now: number }
   const m = s.member;
   const free = s.state === "F" || s.state === "M";
   const eating = s.state === "Q" || s.state === "L";
-  const detail = eating
-    ? `${s.state === "Q" ? "🍔 quick" : "🍝 long"} dinner`
-    : free
-      ? `free until ${s.freeUntil ? fmtTime(s.freeUntil, zone) : "late"}${s.state === "M" ? " (if needed)" : ""}`
-      : s.nextFreeAt
-        ? `free at ${fmtTime(s.nextFreeAt, zone)}`
-        : "busy tonight";
+  const away = vacationOn(m, currentGamingDay(now, m.timezone));
+  const detail = away
+    ? `🏖️ on vacation until ${fmtDate(away.end)}`
+    : eating
+      ? `${s.state === "Q" ? "🍔 quick" : "🍝 long"} dinner`
+      : free
+        ? `free until ${s.freeUntil ? fmtTime(s.freeUntil, zone) : "late"}${s.state === "M" ? " (if needed)" : ""}`
+        : s.nextFreeAt
+          ? `free at ${fmtTime(s.nextFreeAt, zone)}`
+          : "busy tonight";
   return (
     <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
       <span className={`h-2 w-2 rounded-full ${free ? "bg-free" : eating ? "bg-quick" : "bg-line"}`} />

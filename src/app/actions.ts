@@ -6,12 +6,14 @@ import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { getDb } from "@/db";
 import { groups } from "@/db/schema";
-import type { Weekday } from "@/engine";
+import { currentGamingDay, type Weekday } from "@/engine";
 import { actionError, type ActionResult } from "@/lib/action-result";
 import { WEEKDAY_LONG, isValidZone } from "@/lib/format";
 import { DEV_USER_COOKIE, devLoginEnabled } from "@/server/auth";
 import {
+  addVacation,
   createMember,
+  removeVacation,
   saveDateOverride,
   saveProfile,
   saveWeekPatterns,
@@ -93,6 +95,28 @@ export async function saveOverrideAction(date: string, cells: string | null): Pr
     await saveDateOverride(userId, date, cells);
     refreshAll();
     return { ok: true, message: cells === null ? "Back to your normal day" : "Saved for that day" };
+  } catch (e) {
+    return actionError(e);
+  }
+}
+
+export async function addVacationAction(startDate: string, endDate: string): Promise<ActionResult> {
+  const { userId, me } = await requireViewer();
+  try {
+    await addVacation(userId, startDate, endDate, currentGamingDay(Date.now(), me.timezone));
+    refreshAll();
+    return { ok: true, message: "Vacation saved 🏖️" };
+  } catch (e) {
+    return actionError(e);
+  }
+}
+
+export async function removeVacationAction(id: string): Promise<ActionResult> {
+  const { userId } = await requireViewer();
+  try {
+    await removeVacation(userId, id);
+    refreshAll();
+    return { ok: true, message: "Vacation removed" };
   } catch (e) {
     return actionError(e);
   }

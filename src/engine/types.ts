@@ -36,6 +36,8 @@ export interface MemberInput {
   wfhDates?: ReadonlySet<string>;
   /** "HH:mm" local. The night before a WFH day, the evening's availability extends to this time. */
   nightBeforeWfhUntil?: string | null;
+  /** Time away: busy on every gaming day from `start` to `end` ("YYYY-MM-DD", inclusive). Beats everything. */
+  vacations?: ReadonlyArray<{ start: string; end: string }>;
 }
 
 export interface MatchSettings {

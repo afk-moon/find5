@@ -219,6 +219,9 @@ export function awayMessage(away: AwayResult, zone: string, url: string): string
     );
   }
   if (away.lobby) lines.push(away.now ? "🎮 You're in the lobby." : "⏳ The lobby shows when you'll be back.");
+  if (away.vacationUntil) {
+    lines.push(`🏖️ You're on vacation until ${fmtDate(away.vacationUntil)}, so your availability didn't change.`);
+  }
   if (away.clashMs !== null) {
     lines.push(
       `⚠️ Heads up: you're locked in for ${fmtTime(away.clashMs, zone)} ${z} (${discordTs(away.clashMs, "R")}), before you're back. Let the party know.`,

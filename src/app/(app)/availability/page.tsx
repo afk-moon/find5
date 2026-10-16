@@ -1,9 +1,10 @@
 import { DateTime } from "luxon";
-import { EMPTY_PATTERN, gamingDayOf, isWfhDate, resolvePattern } from "@/engine";
-import { zoneAbbr } from "@/lib/format";
-import { requireViewer, toEngineInput } from "@/server/context";
+import { EMPTY_PATTERN, currentGamingDay, isWfhDate, resolvePattern, vacationOn } from "@/engine";
+import { fmtDate, zoneAbbr } from "@/lib/format";
+import { requestTime, requireViewer, toEngineInput } from "@/server/context";
 import { AvailabilityEditor, type DateEntry } from "./AvailabilityEditor";
 import { ProfileForm } from "./ProfileForm";
+import { VacationCard, type VacationItem } from "./VacationCard";
 
 export default async function AvailabilityPage() {
   const { me } = await requireViewer();
@@ -16,10 +17,8 @@ export default async function AvailabilityPage() {
   for (let d = 1; d <= 5; d++) wfhWeek[d] = me.patterns[`wfh${d}`] ?? me.patterns.wfh ?? week[d];
 
   // Start at the gaming day that's on now: at 1am, last night is still "today" (it runs until 4am).
-  const zoneNow = DateTime.now().setZone(me.timezone);
-  const today = DateTime.fromISO(gamingDayOf(zoneNow.toMillis(), me.timezone) ?? zoneNow.toISODate()!, {
-    zone: me.timezone,
-  });
+  const todayDate = currentGamingDay(requestTime(), me.timezone);
+  const today = DateTime.fromISO(todayDate, { zone: me.timezone });
   const dates: DateEntry[] = Array.from({ length: 14 }, (_, i) => {
     const day = today.plus({ days: i });
     const date = day.toISODate()!;
@@ -29,8 +28,19 @@ export default async function AvailabilityPage() {
       cells: resolvePattern(input, date),
       isOverride: !!me.patterns[`d:${date}`],
       isWfh: me.workStyle === "hybrid" && isWfhDate(input, date),
+      isVacation: !!vacationOn(input, date),
     };
   });
+
+  // Current and upcoming time away, labelled here so the client component doesn't need Luxon.
+  const vacations: VacationItem[] = me.vacations
+    .filter((v) => v.end >= todayDate)
+    .map((v) => ({
+      id: v.id,
+      label: v.start === v.end ? fmtDate(v.start) : `${fmtDate(v.start)} – ${fmtDate(v.end)}`,
+      days: DateTime.fromISO(v.end).diff(DateTime.fromISO(v.start), "days").days + 1,
+      current: v.start <= todayDate,
+    }));
 
   return (
     <div className="space-y-5">
@@ -51,14 +61,17 @@ export default async function AvailabilityPage() {
           dates={dates}
           zoneLabel={`${zoneAbbr(me.timezone)} (${me.timezone})`}
         />
-        <ProfileForm
-          profile={{
-            timezone: me.timezone,
-            workStyle: me.workStyle,
-            nightBeforeWfhUntil: me.nightBeforeWfhUntil,
-            hybridDays: me.hybridDays,
-          }}
-        />
+        <div className="space-y-6">
+          <VacationCard vacations={vacations} today={todayDate} />
+          <ProfileForm
+            profile={{
+              timezone: me.timezone,
+              workStyle: me.workStyle,
+              nightBeforeWfhUntil: me.nightBeforeWfhUntil,
+              hybridDays: me.hybridDays,
+            }}
+          />
+        </div>
       </div>
     </div>
   );

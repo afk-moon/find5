@@ -17,12 +17,22 @@ export function isWfhDate(member: MemberInput, date: string): boolean {
   return member.hybridDays?.[weekdayOf(date)] === "wfh";
 }
 
+/** The vacation covering a gaming day ("YYYY-MM-DD"), if any. */
+export function vacationOn(
+  member: { vacations?: ReadonlyArray<{ start: string; end: string }> },
+  date: string,
+): { start: string; end: string } | null {
+  return member.vacations?.find((v) => v.start <= date && date <= v.end) ?? null;
+}
+
 /**
  * Which pattern applies on a local gaming day:
- *   date override  >  that weekday's WFH pattern  >  general WFH pattern (on WFH dates)  >  typical weekday.
+ *   vacation (busy)  >  date override  >  that weekday's WFH pattern  >  general WFH pattern (on WFH dates)
+ *   >  typical weekday.
  * The night before a WFH day, the evening is extended to `nightBeforeWfhUntil`.
  */
 export function resolvePattern(member: MemberInput, date: string): string {
+  if (vacationOn(member, date)) return EMPTY_PATTERN;
   const override = member.overrides?.[date];
   if (override != null) return normalizePattern(override);
 

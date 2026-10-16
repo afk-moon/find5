@@ -11,7 +11,7 @@ const { upcomingWindows } = await import("./windows");
 const { lockInWindow, upcomingPlanned, startLive, setPlayerStatus, goToDinner, getSession, summarizeLive, endSession, activeLive } =
   await import("./sessions");
 const { getWfhState, toggleBallotDay, closeVote, reopenVote, weekStartOf } = await import("./wfh");
-const { saveProfile, saveDateOverride, createMember, saveWfhWeek } = await import("./availability");
+const { saveProfile, saveDateOverride, createMember, saveWfhWeek, addVacation, removeVacation } = await import("./availability");
 const { openLateVotes, toggleLateReport, getLateTally } = await import("./lateness");
 const { setAwayUntil, resolveBackTime } = await import("./away");
 const { freeNowNotInLobby } = await import("./notify");
@@ -21,7 +21,7 @@ const { handleInteraction } = await import("@/discord/handlers");
 const { getDb } = await import("@/db");
 const { memberProfiles, playSessions, playSessionPlayers } = await import("@/db/schema");
 const { DEMO_GROUP_ID } = await import("@/db/seed");
-const { pattern, lateVotingState, resolvePattern } = await import("@/engine");
+const { pattern, lateVotingState, resolvePattern, currentGamingDay, EMPTY_PATTERN } = await import("@/engine");
 const { eq } = await import("drizzle-orm");
 const { DateTime } = await import("luxon");
 
@@ -431,5 +431,53 @@ describe("lobby message in Discord", () => {
     const closed = lobbyMessage(ctx, ended.session, summarizeLive(5, ended.players), ["demo-maya"]);
     expect(closed.content).not.toContain("Free right now");
     expect(closed.allowed_mentions).toEqual({ users: [] });
+  });
+});
+
+describe("vacation", () => {
+  it("checks the dates", async () => {
+    await expect(addVacation("demo-kai", "2031-04-10", "2031-04-05", "2031-04-01")).rejects.toThrow(/before the first day/);
+    await expect(addVacation("demo-kai", "2031-02-30", "2031-03-02", "2031-01-01")).rejects.toThrow(/first and last day/);
+    await expect(addVacation("demo-kai", "2031-01-01", "2031-01-02", "2031-03-01")).rejects.toThrow(/already over/);
+    await expect(addVacation("demo-kai", "2031-01-01", "2032-01-05", "2031-01-01")).rejects.toThrow(/more than a year/);
+  });
+
+  it("keeps someone out of every window while they're away, and only they can remove it", async () => {
+    ctx = await fresh();
+    const today = currentGamingDay(Date.now(), ctx.byId.get("demo-kai")!.timezone);
+    const lastDay = DateTime.fromISO(today).plus({ days: 8 }).toISODate()!;
+    expect(upcomingWindows(ctx).some((w) => w.party.includes("demo-kai"))).toBe(true);
+
+    const trip = await addVacation("demo-kai", today, lastDay, today);
+    try {
+      ctx = await fresh();
+      const kai = ctx.byId.get("demo-kai")!;
+      expect(kai.vacations).toEqual([{ id: trip.id, start: today, end: lastDay }]);
+      expect(resolvePattern(toEngineInput(kai), today)).toBe(EMPTY_PATTERN);
+      expect(upcomingWindows(ctx).some((w) => w.party.includes("demo-kai"))).toBe(false);
+
+      await removeVacation("demo-sam", trip.id); // not Sam's
+      ctx = await fresh();
+      expect(ctx.byId.get("demo-kai")!.vacations).toHaveLength(1);
+    } finally {
+      await removeVacation("demo-kai", trip.id);
+    }
+    ctx = await fresh();
+    expect(ctx.byId.get("demo-kai")!.vacations).toEqual([]);
+  });
+
+  it("'/back' while away: a time is refused, 'now' leaves availability alone and says why", async () => {
+    const zone = ctx.byId.get("demo-rosa")!.timezone;
+    const at = (iso: string) => DateTime.fromISO(iso, { zone }).toMillis();
+    const trip = await addVacation("demo-rosa", "2031-05-01", "2031-05-03", "2031-04-01");
+    try {
+      ctx = await fresh();
+      await expect(setAwayUntil(ctx, "demo-rosa", "9pm", at("2031-05-02T17:00"))).rejects.toThrow(/on vacation until May 3/);
+      const back = await setAwayUntil(ctx, "demo-rosa", "now", at("2031-05-02T19:10"));
+      expect(back).toMatchObject({ plan: null, vacationUntil: "2031-05-03" });
+      expect(awayMessage(back, zone, "http://localhost:3000")).toContain("on vacation until May 3");
+    } finally {
+      await removeVacation("demo-rosa", trip.id);
+    }
   });
 });

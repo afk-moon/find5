@@ -1,5 +1,5 @@
 import { DateTime } from "luxon";
-import { resolvePattern } from "./availability";
+import { resolvePattern, vacationOn } from "./availability";
 import { CELLS_PER_DAY, DAY_START_HOUR, cellIndexForWallTime, cellInstant, gamingDayBounds, gamingDayOf } from "./time";
 import type { MemberInput } from "./types";
 
@@ -86,6 +86,11 @@ export function planAway(member: MemberInput, nowMs: number, backMs: number): Aw
   const zone = member.timezone;
   const date = gamingDayOf(backMs, zone);
   if (!date) throw new Error("Pick a time between 8am and 4am.");
+  const vacation = vacationOn(member, date);
+  if (vacation) {
+    const until = DateTime.fromISO(vacation.end).toFormat("LLL d");
+    throw new Error(`You're on vacation until ${until} 🏖️. To play anyway, shorten it under My availability.`);
+  }
   const back = DateTime.fromMillis(backMs, { zone });
   const onTheDot = back.minute % 30 === 0 && back.second === 0 && back.millisecond === 0;
   const backIdx = cellIndexForWallTime(back.hour, back.minute) + (onTheDot ? 0 : 1);

@@ -73,6 +73,11 @@ export function gamingDayOf(ms: number, zone: string): string | null {
   return (local.hour < 4 ? local.minus({ days: 1 }) : local).toISODate();
 }
 
+/** "Today" as a gaming day: the one that's on now (at 1am, still last night), or between 4am and 8am the one about to start. */
+export function currentGamingDay(ms: number, zone: string): string {
+  return gamingDayOf(ms, zone) ?? DateTime.fromMillis(ms, { zone }).toISODate()!;
+}
+
 /** The instant a cell boundary (0–40) happens on a local gaming day: 0 → 08:00, 32 → midnight, 40 → 04:00 next day. */
 export function cellInstant(date: string, idx: number, zone: string): number {
   const { hour, minute } = cellStart(idx);

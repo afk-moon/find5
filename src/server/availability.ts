@@ -1,6 +1,7 @@
 import { and, eq, like } from "drizzle-orm";
+import { DateTime } from "luxon";
 import { getDb } from "@/db";
-import { dayPatterns, hybridDays, memberProfiles, memberships, user, wfhDays, groups } from "@/db/schema";
+import { dayPatterns, hybridDays, memberProfiles, memberships, user, vacations, wfhDays, groups } from "@/db/schema";
 import { normalizePattern, pattern } from "@/engine";
 import type { HybridMode } from "@/engine/types";
 import { isValidZone } from "@/lib/format";
@@ -43,6 +44,30 @@ export async function saveDateOverride(userId: string, date: string, cells: stri
   } else {
     await upsertPattern(userId, `d:${date}`, cells);
   }
+}
+
+/** A real calendar day ("2026-02-30" isn't). */
+const isRealDate = (date: string) => DATE_RE.test(date) && DateTime.fromISO(date, { zone: "utc" }).isValid;
+
+/**
+ * Add time away: busy every day from `startDate` to `endDate` (inclusive, the member's own local days).
+ * `today` is their current gaming day, so a trip that's already over is refused.
+ */
+export async function addVacation(userId: string, startDate: string, endDate: string, today: string) {
+  if (!isRealDate(startDate) || !isRealDate(endDate)) throw new Error("Pick the first and last day you're away.");
+  if (endDate < startDate) throw new Error("The last day is before the first day.");
+  if (endDate < today) throw new Error("Those dates are already over.");
+  const length = DateTime.fromISO(endDate, { zone: "utc" }).diff(DateTime.fromISO(startDate, { zone: "utc" }), "days").days;
+  if (length >= 366) throw new Error("That's more than a year. Pick a shorter trip.");
+  const db = await getDb();
+  const [row] = await db.insert(vacations).values({ userId, startDate, endDate }).returning();
+  return row;
+}
+
+/** Remove one of your own vacations. */
+export async function removeVacation(userId: string, id: string) {
+  const db = await getDb();
+  await db.delete(vacations).where(and(eq(vacations.id, id), eq(vacations.userId, userId)));
 }
 
 export interface ProfileInput {

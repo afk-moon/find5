@@ -153,6 +153,18 @@ export const wfhDays = pgTable(
   (t) => [primaryKey({ columns: [t.userId, t.date] })],
 );
 
+/** Time away (vacation, travel): the member isn't available on any day from startDate to endDate. */
+export const vacations = pgTable("vacations", {
+  id: text("id").primaryKey().$defaultFn(uuid),
+  userId: text("user_id")
+    .notNull()
+    .references(() => user.id, { onDelete: "cascade" }),
+  /** First and last day away, inclusive ("YYYY-MM-DD" gaming days in the member's own zone). */
+  startDate: text("start_date").notNull(),
+  endDate: text("end_date").notNull(),
+  createdAt: createdAt(),
+});
+
 export const wfhVotes = pgTable(
   "wfh_votes",
   {

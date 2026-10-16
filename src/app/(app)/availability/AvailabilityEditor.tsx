@@ -32,6 +32,8 @@ export interface DateEntry {
   cells: string;
   isOverride: boolean;
   isWfh: boolean;
+  /** Inside a vacation: busy all day, and painting it wouldn't change anything. */
+  isVacation: boolean;
 }
 
 interface Column {
@@ -259,10 +261,16 @@ export function AvailabilityEditor({
                 {d.label}
                 {d.isOverride && <span className="text-val">•</span>}
                 {d.isWfh && <span>🏠</span>}
+                {d.isVacation && <span>🏖️</span>}
               </button>
             ))}
           </div>
-          {entry && (
+          {entry?.isVacation && (
+            <p className="text-sm text-muted">
+              🏖️ You&apos;re on vacation this day, so you show as busy. To play after all, remove or shorten the vacation.
+            </p>
+          )}
+          {entry && !entry.isVacation && (
             <>
               <div className="max-w-xs">
                 <PaintGrid brush={brush} onPaint={paint} columns={[{ key: entry.date, label: entry.label, cells: dateCells }]} />

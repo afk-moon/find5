@@ -7,6 +7,8 @@ optional Discord bot.
 - **Windows:** the best times this week when the same 5 people are free, shown in your own time zone.
 - **Dinner-aware:** a 🍔 quick dinner pauses the party; a 🍝 long dinner splits the session.
 - **WFH sync:** hybrid members vote on a shared work-from-home day that unlocks the most play time.
+- **Vacation:** in **My availability**, pick the first and last day you're away. You show as busy on every
+  day in between, whatever your usual week or one-off days say, and the Live page shows who's on vacation.
 - **Live lobby:** “who's on right now?” with I'm in / in 15 min / dinner / back.
 - **Late reports:** once a locked-in session starts, teammates can report who was late. Anyone late in
   more than half of their last 10 sessions gets a ⏰ **Frequently late** tag next to their name.

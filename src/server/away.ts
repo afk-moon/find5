@@ -1,5 +1,13 @@
 import { DateTime } from "luxon";
-import { cellIndexForWallTime, gamingDayOf, nextOccurrence, parseClockTime, planAway, type AwayPlan } from "@/engine";
+import {
+  cellIndexForWallTime,
+  gamingDayOf,
+  nextOccurrence,
+  parseClockTime,
+  planAway,
+  vacationOn,
+  type AwayPlan,
+} from "@/engine";
 import { saveDateOverride } from "./availability";
 import { toEngineInput, type GroupContext } from "./context";
 import { activeLive, setPlayerStatus, summarizeLive, upcomingPlanned, type LiveSummary } from "./sessions";
@@ -9,12 +17,14 @@ export interface AwayResult {
   backMs: number;
   /** "/back now": free from now, and in the lobby if one is open. */
   now: boolean;
-  /** How their availability changed. Null for "now" between 4am and 8am, which is outside every gaming day. */
+  /** How their availability changed. Null for "now" between 4am and 8am (no gaming day) or on vacation. */
   plan: AwayPlan | null;
   /** The open lobby they were added to, and its state before (for the "party's full" ping). */
   lobby: { sessionId: string; before: LiveSummary["state"] } | null;
   /** Start of a locked-in session they're in that begins before they're back. */
   clashMs: number | null;
+  /** Last day of the vacation they're on, when "now" left their availability alone because of it. */
+  vacationUntil: string | null;
 }
 
 const NOW = /^(now|rn|right ?now)$/i;
@@ -50,8 +60,11 @@ export async function setAwayUntil(
   const me = ctx.byId.get(userId);
   if (!me) throw new Error("You're not in this group.");
   const { backMs, now } = resolveBackTime(input, nowMs, me.timezone);
-  // Between 4am and 8am there's no gaming day to change, so "now" only updates the lobby.
-  const plan = now && !gamingDayOf(nowMs, me.timezone) ? null : planAway(toEngineInput(me), nowMs, backMs);
+  const member = toEngineInput(me);
+  const today = gamingDayOf(nowMs, me.timezone);
+  const vacation = now && today ? vacationOn(member, today) : null;
+  // "now" between 4am and 8am (no gaming day) or on vacation leaves availability alone and only updates the lobby.
+  const plan = now && (!today || vacation) ? null : planAway(member, nowMs, backMs);
 
   const [live, planned] = await Promise.all([
     activeLive(ctx.group.id, nowMs),
@@ -70,5 +83,5 @@ export async function setAwayUntil(
     : planned.find(
         (p) => p.session.startAt.getTime() < backMs && p.players.some((x) => x.userId === userId && x.status === "in"),
       );
-  return { backMs, now, plan, lobby, clashMs: clash?.session.startAt.getTime() ?? null };
+  return { backMs, now, plan, lobby, clashMs: clash?.session.startAt.getTime() ?? null, vacationUntil: vacation?.end ?? null };
 }
