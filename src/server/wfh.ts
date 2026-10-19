@@ -3,7 +3,7 @@ import { DateTime } from "luxon";
 import { getDb } from "@/db";
 import { wfhBallots, wfhDays, wfhVotes } from "@/db/schema";
 import { addDays, decideWfhVote, planWfhWeek, type Weekday, type WfhPlan } from "@/engine";
-import type { GroupContext, MemberView } from "./context";
+import { mainGame, type GroupContext, type MemberView } from "./context";
 
 export type WfhVote = typeof wfhVotes.$inferSelect;
 
@@ -44,6 +44,22 @@ export interface WfhState {
   projection: WfhPlan;
 }
 
+/**
+ * Planner inputs for a week. Every member can vote and WFH, but play time is counted for the game most of
+ * the group plays, among the people who play it.
+ */
+function planArgs(ctx: GroupContext, weekStart: string) {
+  const main = mainGame(ctx);
+  return {
+    members: ctx.inputs,
+    settings: main.settings,
+    players: new Set(main.game.players),
+    weekStart,
+    homeZone: ctx.group.homeTimezone,
+    sharedDays: ctx.group.wfhSharedDays,
+  };
+}
+
 export async function getWfhState(ctx: GroupContext, weekStart: string): Promise<WfhState> {
   const db = await getDb();
   const thisVote = () =>
@@ -56,13 +72,7 @@ export async function getWfhState(ctx: GroupContext, weekStart: string): Promise
     db.select().from(wfhBallots).where(inArray(wfhBallots.voteId, thisVote())),
   ]);
   const ballots: Record<string, Weekday[]> = Object.fromEntries(ballotRows.map((r) => [r.userId, r.days as Weekday[]]));
-  const args = {
-    members: ctx.inputs,
-    settings: ctx.settings,
-    weekStart,
-    homeZone: ctx.group.homeTimezone,
-    sharedDays: ctx.group.wfhSharedDays,
-  };
+  const args = planArgs(ctx, weekStart);
   const projection = planWfhWeek(args);
   const plan = Object.keys(ballots).length ? planWfhWeek({ ...args, ballots }) : projection;
   return { weekStart, vote, ballots, hybrid: ctx.members.filter((m) => m.workStyle === "hybrid"), plan, projection };
@@ -109,14 +119,7 @@ export async function clearBallot(ctx: GroupContext, weekStart: string, userId: 
 export async function closeVote(ctx: GroupContext, weekStart: string) {
   const vote = await ensureVote(ctx.group.id, weekStart);
   const ballots = await getBallots(vote.id);
-  const result = decideWfhVote({
-    members: ctx.inputs,
-    settings: ctx.settings,
-    weekStart,
-    homeZone: ctx.group.homeTimezone,
-    sharedDays: ctx.group.wfhSharedDays,
-    ballots,
-  });
+  const result = decideWfhVote({ ...planArgs(ctx, weekStart), ballots });
   const db = await getDb();
   if (result.assignments.length) {
     await db

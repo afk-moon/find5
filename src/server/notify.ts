@@ -5,6 +5,7 @@ import {
   lobbyMessage,
   lobbyMovedMessage,
   partyFullMessage,
+  partyLabel,
   plannedSessionMessage,
   storedPlannedMessage,
   wfhDecisionMessage,
@@ -12,7 +13,7 @@ import {
 } from "@/discord/messages";
 import { appUrl, botConfigured, createScheduledEvent, editMessage, postMessage } from "@/discord/rest";
 import { lateVotingClosesAt, type PlayWindow } from "@/engine";
-import type { GroupContext } from "./context";
+import { sessionGame, type GameContext, type GroupContext } from "./context";
 import { getLateTally } from "./lateness";
 import { closeExpiredLobbies, getSession, summarizeLive, type LiveSummary, type PlaySession } from "./sessions";
 import { getWfhState } from "./wfh";
@@ -34,7 +35,8 @@ function parseRef(ref: string | null | undefined) {
   return channelId && messageId ? { channelId, messageId } : null;
 }
 
-export function freeNowNotInLobby(ctx: GroupContext, lobby: Iterable<string>): string[] {
+/** People who play this game, are free by their schedule right now, and haven't answered the lobby. */
+export function freeNowNotInLobby(ctx: GameContext, lobby: Iterable<string>): string[] {
   const inLobby = new Set(lobby);
   return membersNow(ctx)
     .filter((m) => (m.state === "F" || m.state === "M") && !inLobby.has(m.member.id))
@@ -42,7 +44,7 @@ export function freeNowNotInLobby(ctx: GroupContext, lobby: Iterable<string>): s
 }
 
 /** Post the locked-in session (with its dinner/last-queue timeline and late check) and create a Scheduled Event. */
-export function announceLockIn(ctx: GroupContext, session: PlaySession, window: PlayWindow) {
+export function announceLockIn(ctx: GameContext, session: PlaySession, window: PlayWindow) {
   return safely("lock-in", async () => {
     const channelId = ctx.group.discordChannelId;
     if (!channelId) return;
@@ -51,7 +53,7 @@ export function announceLockIn(ctx: GroupContext, session: PlaySession, window: 
     let eventId: string | null = null;
     if (ctx.group.discordGuildId && window.startMs > Date.now() + 60_000) {
       const event = await createScheduledEvent(ctx.group.discordGuildId, {
-        name: `Valorant ${ctx.group.partySize}-stack`,
+        name: `${ctx.game.name} ${partyLabel(ctx.game.partySize)}`,
         description: `Party: ${window.party.map((id) => ctx.byId.get(id)?.name).join(", ")}`,
         startMs: window.startMs,
         endMs: window.endMs,
@@ -94,9 +96,10 @@ export function syncLobby(ctx: GroupContext, sessionId: string, previous?: LiveS
   return safely("lobby", async () => {
     const s = await getSession(ctx.group.id, sessionId);
     if (!s) return;
-    const summary = summarizeLive(ctx.group.partySize, s.players);
+    const game = sessionGame(ctx, s.session);
+    const summary = summarizeLive(game.game.partySize, s.players);
     // Every render lists who's free and hasn't answered, so edits don't drop that line.
-    const message = lobbyMessage(ctx, s.session, summary, freeNowNotInLobby(ctx, s.players.map((p) => p.userId)));
+    const message = lobbyMessage(ctx, s.session, summary, freeNowNotInLobby(game, s.players.map((p) => p.userId)));
     const ref = parseRef(s.session.discordMessageId);
     if (ref) {
       await editMessage(ref.channelId, ref.messageId, message);
@@ -110,7 +113,7 @@ export function syncLobby(ctx: GroupContext, sessionId: string, previous?: LiveS
     }
     const channelId = ref?.channelId ?? ctx.group.discordChannelId;
     if (channelId && previous && previous !== "full" && summary.state === "full") {
-      await postMessage(channelId, partyFullMessage(ctx, summary));
+      await postMessage(channelId, partyFullMessage(game, summary));
     }
   });
 }

@@ -6,7 +6,8 @@ import { beforeAll, describe, expect, it, vi } from "vitest";
 // Throwaway embedded database (seeded with the demo group on first use).
 process.env.PGLITE_DIR = mkdtempSync(path.join(tmpdir(), "receptionist-flows-"));
 
-const { loadGroupContext, toEngineInput } = await import("./context");
+const { loadGroupContext, toEngineInput, mainGame, forGame, gamesOf, findGame, sessionGame } = await import("./context");
+const { setMemberGames, addGame, updateGame, removeGame } = await import("./games");
 const { upcomingWindows } = await import("./windows");
 const {
   lockInWindow,
@@ -19,6 +20,8 @@ const {
   endSession,
   activeLive,
   lobbyCutoff,
+  openLobbies,
+  lobbiesFor,
 } = await import("./sessions");
 const { getWfhState, toggleBallotDay, closeVote, reopenVote, weekStartOf } = await import("./wfh");
 const { saveProfile, saveDateOverride, createMember, saveWfhWeek, addVacation, removeVacation } = await import("./availability");
@@ -35,7 +38,7 @@ const {
   mention,
   awayMessage,
 } = await import("@/discord/messages");
-const { handleInteraction } = await import("@/discord/handlers");
+const { handleInteraction, handleAutocomplete } = await import("@/discord/handlers");
 const { getDb } = await import("@/db");
 const { memberProfiles, playSessions, playSessionPlayers } = await import("@/db/schema");
 const { DEMO_GROUP_ID } = await import("@/db/seed");
@@ -46,6 +49,8 @@ const { DateTime } = await import("luxon");
 type Ctx = Awaited<ReturnType<typeof loadGroupContext>>;
 let ctx: Ctx;
 const fresh = () => loadGroupContext(DEMO_GROUP_ID);
+/** The demo group narrowed to Valorant, the game all five play. */
+const val = () => mainGame(ctx);
 
 function assertDiscordLimits(msg: { content: string; components?: Array<{ components: Array<{ custom_id?: string }> }> }) {
   expect(msg.content.length).toBeLessThanOrEqual(2000);
@@ -67,35 +72,38 @@ describe("demo group", () => {
   });
 
   it("finds windows and renders a Discord summary", () => {
-    const windows = upcomingWindows(ctx);
+    const windows = upcomingWindows(val());
     expect(windows.length).toBeGreaterThan(0);
-    assertDiscordLimits(windowsMessage(ctx, windows, "http://localhost:3000"));
+    assertDiscordLimits(windowsMessage([{ game: val().game, windows }], "http://localhost:3000"));
   });
 });
 
 describe("planned sessions", () => {
   it("locks in a window once and lists it", async () => {
-    const [w] = upcomingWindows(ctx);
-    const first = await lockInWindow(ctx, "demo-kai", w.startMs, w.endMs);
-    const again = await lockInWindow(ctx, "demo-kai", w.startMs, w.endMs);
+    const [w] = upcomingWindows(val());
+    const first = await lockInWindow(val(), "demo-kai", w.startMs, w.endMs);
+    const again = await lockInWindow(val(), "demo-kai", w.startMs, w.endMs);
     expect(first.created).toBe(true);
     expect(again.created).toBe(false);
     const planned = await upcomingPlanned(ctx.group.id);
     expect(planned.map((p) => p.session.id)).toContain(first.session.id);
     expect(planned[0].players).toHaveLength(5);
-    assertDiscordLimits(plannedSessionMessage(ctx, w));
+    expect(first.session.gameId).toBe(val().game.id);
+    const msg = plannedSessionMessage(val(), w);
+    expect(msg.content).toContain("🔒 **Locked in: Valorant**");
+    assertDiscordLimits(msg);
   });
 
   it("refuses a window that doesn't exist", async () => {
-    await expect(lockInWindow(ctx, "demo-kai", 0, 1)).rejects.toThrow(/isn't available/);
+    await expect(lockInWindow(val(), "demo-kai", 0, 1)).rejects.toThrow(/isn't available/);
   });
 });
 
 describe("live lobby", () => {
   it("fills up, pauses for a quick dinner, and resumes", async () => {
-    const { sessionId, created } = await startLive(ctx, "demo-kai");
+    const { sessionId, created } = await startLive(val(), "demo-kai");
     expect(created).toBe(true);
-    expect((await startLive(ctx, "demo-sam")).sessionId).toBe(sessionId); // joins the same lobby
+    expect((await startLive(val(), "demo-sam")).sessionId).toBe(sessionId); // joins the same lobby
 
     for (const id of ["demo-maya", "demo-dev", "demo-rosa"]) await setPlayerStatus(ctx, sessionId, id, "in");
     let s = (await getSession(ctx.group.id, sessionId))!;
@@ -179,8 +187,8 @@ describe("late reports", () => {
     const planned = await upcomingPlanned(ctx.group.id);
     const existing = planned.find((p) => p.session.startAt.getTime() > Date.now());
     if (existing) return existing.session.id;
-    const w = upcomingWindows(ctx).find((x) => x.startMs > Date.now())!;
-    return (await lockInWindow(ctx, "demo-kai", w.startMs, w.endMs)).session.id;
+    const w = upcomingWindows(val()).find((x) => x.startMs > Date.now())!;
+    return (await lockInWindow(val(), "demo-kai", w.startMs, w.endMs)).session.id;
   }
 
   it("tags Sam as frequently late from the seeded history", () => {
@@ -328,7 +336,7 @@ describe("/back with a time", () => {
     try {
       ctx = await fresh();
       const away = await setAwayUntil(ctx, "demo-rosa", "9pm", at("2031-03-04T17:10"));
-      expect(away).toMatchObject({ backMs: at("2031-03-04T21:00"), now: false, lobby: null, clashMs: at("2031-03-04T20:00") });
+      expect(away).toMatchObject({ backMs: at("2031-03-04T21:00"), now: false, lobbies: [], clashMs: at("2031-03-04T20:00") });
       ctx = await fresh();
       expect(ctx.byId.get("demo-rosa")!.patterns["d:2031-03-04"]).toBe(pattern({ F: [["21:00", "23:00"]] }));
       const msg = awayMessage(away, zone(), "http://localhost:3000");
@@ -345,11 +353,11 @@ describe("/back with a time", () => {
     const db = await getDb();
     const [lobby] = await db
       .insert(playSessions)
-      .values({ groupId: ctx.group.id, kind: "live", startAt: new Date(at("2031-03-04T18:00")), createdBy: "demo-kai" })
+      .values({ groupId: ctx.group.id, gameId: `valorant-${DEMO_GROUP_ID}`, kind: "live", startAt: new Date(at("2031-03-04T18:00")), createdBy: "demo-kai" })
       .returning();
     try {
       const away = await setAwayUntil(ctx, "demo-rosa", "10:30pm", at("2031-03-04T19:00"));
-      expect(away.lobby).toEqual({ sessionId: lobby.id, before: "forming" });
+      expect(away.lobbies).toEqual([{ sessionId: lobby.id, before: "forming", game: "Valorant" }]);
       let s = (await getSession(ctx.group.id, lobby.id))!;
       const summary = summarizeLive(5, s.players);
       expect(summary.soon).toEqual([{ id: "demo-rosa", backAt: at("2031-03-04T22:30") }]);
@@ -360,7 +368,7 @@ describe("/back with a time", () => {
       ctx = await fresh();
       const back = await setAwayUntil(ctx, "demo-rosa", "now", at("2031-03-04T20:10"));
       expect(back.now).toBe(true);
-      expect(awayMessage(back, zone(), "http://localhost:3000")).toContain("You're in the lobby");
+      expect(awayMessage(back, zone(), "http://localhost:3000")).toContain("You're in the Valorant lobby");
       s = (await getSession(ctx.group.id, lobby.id))!;
       expect(summarizeLive(5, s.players).playing).toEqual(["demo-rosa"]);
 
@@ -368,12 +376,12 @@ describe("/back with a time", () => {
       // 4–8am is outside every gaming day, so "now" only touches the lobby.
       const [dawn] = await db
         .insert(playSessions)
-        .values({ groupId: ctx.group.id, kind: "live", startAt: new Date(at("2031-03-05T04:30")), createdBy: "demo-kai" })
+        .values({ groupId: ctx.group.id, gameId: `valorant-${DEMO_GROUP_ID}`, kind: "live", startAt: new Date(at("2031-03-05T04:30")), createdBy: "demo-kai" })
         .returning();
       try {
         const early = await setAwayUntil(ctx, "demo-rosa", "now", at("2031-03-05T05:00"));
-        expect(early).toMatchObject({ plan: null, lobby: { sessionId: dawn.id } });
-        expect(awayMessage(early, zone(), "http://localhost:3000")).toBe("✅ Welcome back!\n🎮 You're in the lobby.");
+        expect(early).toMatchObject({ plan: null, lobbies: [{ sessionId: dawn.id }] });
+        expect(awayMessage(early, zone(), "http://localhost:3000")).toBe("✅ Welcome back!\n🎮 You're in the Valorant lobby.");
       } finally {
         await endSession(ctx, dawn.id);
       }
@@ -422,7 +430,7 @@ describe("lobby message in Discord", () => {
       const user = (id: string) => ({ user: { id, username: id } });
 
       const opened = await handleInteraction(
-        { id: "1", application_id: "app", type: 2, token: "t", channel_id: "chan", member: user("1001"), data: { name: "lfg" } },
+        { id: "1", application_id: "app", type: 2, token: "t", channel_id: "chan", member: user("1001"), data: { name: "lfg", options: [{ name: "game", value: "valorant" }] } },
         () => {},
       );
       expect(opened.data!.content).toContain("📣 Free right now");
@@ -445,7 +453,7 @@ describe("lobby message in Discord", () => {
       );
       expect(tapped.type).toBe(7);
       ctx = await fresh();
-      const free = freeNowNotInLobby(ctx, ["demo-kai", "demo-sam"]);
+      const free = freeNowNotInLobby(val(), ["demo-kai", "demo-sam"]);
       expect(free).toEqual(expect.arrayContaining(["demo-maya", "demo-dev"]));
       expect(tapped.data!.content).toContain(`📣 Free right now: ${free.map((id) => mention(ctx.byId.get(id))).join(", ")}`);
       assertDiscordLimits(tapped.data!);
@@ -474,7 +482,7 @@ describe("vacation", () => {
     ctx = await fresh();
     const today = currentGamingDay(Date.now(), ctx.byId.get("demo-kai")!.timezone);
     const lastDay = DateTime.fromISO(today).plus({ days: 8 }).toISODate()!;
-    expect(upcomingWindows(ctx).some((w) => w.party.includes("demo-kai"))).toBe(true);
+    expect(upcomingWindows(val()).some((w) => w.party.includes("demo-kai"))).toBe(true);
 
     const trip = await addVacation("demo-kai", today, lastDay, today);
     try {
@@ -482,7 +490,7 @@ describe("vacation", () => {
       const kai = ctx.byId.get("demo-kai")!;
       expect(kai.vacations).toEqual([{ id: trip.id, start: today, end: lastDay }]);
       expect(resolvePattern(toEngineInput(kai), today)).toBe(EMPTY_PATTERN);
-      expect(upcomingWindows(ctx).some((w) => w.party.includes("demo-kai"))).toBe(false);
+      expect(upcomingWindows(val()).some((w) => w.party.includes("demo-kai"))).toBe(false);
 
       await removeVacation("demo-sam", trip.id); // not Sam's
       ctx = await fresh();
@@ -524,9 +532,9 @@ describe("old lobbies", () => {
     const db = await getDb();
     const [old] = await db
       .insert(playSessions)
-      .values({ groupId: ctx.group.id, kind: "live", startAt: new Date(ct("2031-03-21T03:00")), createdBy: "demo-kai" })
+      .values({ groupId: ctx.group.id, gameId: `valorant-${DEMO_GROUP_ID}`, kind: "live", startAt: new Date(ct("2031-03-21T03:00")), createdBy: "demo-kai" })
       .returning();
-    const { sessionId, created, closed } = await startLive(ctx, "demo-sam", ct("2031-03-21T09:00"));
+    const { sessionId, created, closed } = await startLive(val(), "demo-sam", ct("2031-03-21T09:00"));
     try {
       expect(created).toBe(true);
       expect(closed).toEqual([old.id]);
@@ -534,7 +542,7 @@ describe("old lobbies", () => {
       const was = (await getSession(ctx.group.id, old.id))!;
       expect(was.session.status).toBe("ended");
       const post = lobbyMessage(ctx, was.session, summarizeLive(5, was.players), []);
-      expect(post.content).toContain("🏁 **Lobby closed.** Start a new one with /lfg.");
+      expect(post.content).toContain("🏁 **Valorant lobby closed.** Start a new one with /lfg.");
       expect(post.content).toContain(`-# Opened <t:${ct("2031-03-21T03:00") / 1000}:f> by Kai`);
       expect(post.components).toEqual([]);
     } finally {
@@ -548,7 +556,7 @@ describe("old lobbies", () => {
     ctx = await fresh();
     const [old] = await db
       .insert(playSessions)
-      .values({ groupId: ctx.group.id, kind: "live", startAt: new Date(Date.now() - 13 * 3_600_000), createdBy: "demo-kai" })
+      .values({ groupId: ctx.group.id, gameId: `valorant-${DEMO_GROUP_ID}`, kind: "live", startAt: new Date(Date.now() - 13 * 3_600_000), createdBy: "demo-kai" })
       .returning();
     const tasks: Array<() => Promise<unknown>> = [];
     const res = await handleInteraction(
@@ -565,7 +573,7 @@ describe("old lobbies", () => {
       (task) => tasks.push(task),
     );
     expect(res.type).toBe(7); // redraws the old post
-    expect(res.data!.content).toContain("Lobby closed");
+    expect(res.data!.content).toContain("Valorant lobby closed");
     expect(res.data!.components).toEqual([]);
     expect(tasks).toHaveLength(1); // the private "that lobby is closed" note
     expect((await getSession(ctx.group.id, old.id))!.session.status).toBe("ended");
@@ -576,5 +584,166 @@ describe("old lobbies", () => {
     expect(moved.content).toBe("↪️ This lobby moved to a newer post: https://discord.com/channels/guild/chan/new-msg");
     expect(moved.components).toEqual([]);
     expect(lobbyMovedMessage("chan:new-msg").content).toBe("↪️ This lobby moved to a newer post below.");
+  });
+});
+
+describe("games", () => {
+  const byName = (name: string) => ctx.games.find((g) => g.name === name)!;
+  const game = (name: string) => forGame(ctx, byName(name));
+  const kai = { user: { id: "1001", username: "kai" } };
+  const base = { id: "1", application_id: "app", token: "t", channel_id: "chan", member: kai };
+
+  beforeAll(async () => {
+    const db = await getDb();
+    await db.update(memberProfiles).set({ discordId: "1001" }).where(eq(memberProfiles.userId, "demo-kai"));
+    ctx = await fresh();
+  });
+
+  it("start with four, most players first, and each member plays some of them", () => {
+    expect(ctx.games.map((g) => [g.name, g.partySize, g.players.length])).toEqual([
+      ["Valorant", 5, 5],
+      ["League of Legends", 5, 4],
+      ["Aion 2", 4, 4],
+      ["TFT", 2, 2],
+    ]);
+    expect(gamesOf(ctx, "demo-maya").map((g) => g.name)).toEqual(["Valorant", "League of Legends", "TFT"]);
+    expect(ctx.members.find((m) => m.name === "Jordan")!.games).toEqual([]); // joined later, hasn't picked yet
+    expect(findGame(ctx, "league")?.name).toBe("League of Legends");
+    expect(findGame(ctx, "TFT")?.name).toBe("TFT");
+    expect(findGame(ctx, "a")).toBeNull(); // matches several
+  });
+
+  it("finds each game's windows among the people who play it", () => {
+    const tft = upcomingWindows(game("TFT"));
+    expect(tft.length).toBeGreaterThan(0);
+    for (const w of tft) expect(w.party.every((id) => ["demo-maya", "demo-rosa"].includes(id))).toBe(true);
+    for (const w of upcomingWindows(game("Aion 2"))) {
+      expect(w.party.length).toBeGreaterThanOrEqual(4);
+      expect(w.party).not.toContain("demo-maya");
+    }
+    expect(upcomingWindows(game("League of Legends"))).toEqual([]); // needs 5, only 4 play it
+    const msg = windowsMessage(
+      ctx.games.map((g) => ({ game: g, windows: upcomingWindows(forGame(ctx, g)) })),
+      "http://localhost:3000",
+    );
+    expect(msg.content).toContain("**League of Legends** (5-stack): needs 5 players, and 4 play it so far.");
+    expect(msg.content).toContain("**TFT** (duo)\n• ");
+    assertDiscordLimits(msg);
+
+    // Lots of games with lots of windows still fit in one Discord post.
+    const windows = upcomingWindows(val());
+    const many = Array.from({ length: 8 }, (_, i) => ({ game: { ...val().game, name: `Game ${i}` }, windows: [...windows, ...windows] }));
+    assertDiscordLimits(windowsMessage(many, "http://localhost:3000"));
+  });
+
+  it("can be picked, added, edited and removed", async () => {
+    const jordan = ctx.members.find((m) => m.name === "Jordan")!.id;
+    expect(await setMemberGames(ctx, jordan, [byName("TFT").id, "not-a-game"])).toEqual([byName("TFT").id]);
+    ctx = await fresh();
+    expect(byName("TFT").players).toContain(jordan);
+
+    await expect(addGame(ctx, jordan, { name: "  valorant ", partySize: 5 })).rejects.toThrow(/already on the list/);
+    await expect(addGame(ctx, jordan, { name: "   ", partySize: 5 })).rejects.toThrow(/name/);
+    const added = await addGame(ctx, jordan, { name: "Overwatch   2", partySize: 99 });
+    ctx = await fresh();
+    expect(byName("Overwatch 2")).toMatchObject({ partySize: 10, matchMinutes: 40, players: [jordan] });
+
+    await expect(updateGame(ctx, added.id, { name: "tft", partySize: 5, matchMinutes: 20 })).rejects.toThrow(/already/);
+    await updateGame(ctx, added.id, { name: "Overwatch", partySize: 5, matchMinutes: 20 });
+    ctx = await fresh();
+    expect(ctx.gameById.get(added.id)).toMatchObject({ name: "Overwatch", partySize: 5, matchMinutes: 20 });
+
+    // A lobby for a game that's removed stays, without a game.
+    const db = await getDb();
+    const [lobby] = await db
+      .insert(playSessions)
+      .values({ groupId: ctx.group.id, gameId: added.id, kind: "live", startAt: new Date(), createdBy: jordan })
+      .returning();
+    await expect(removeGame({ ...ctx, games: [ctx.gameById.get(added.id)!] }, added.id)).rejects.toThrow(/at least one/);
+    await removeGame(ctx, added.id);
+    await setMemberGames(ctx, jordan, []);
+    ctx = await fresh();
+    expect(ctx.gameById.has(added.id)).toBe(false);
+    expect(ctx.members.find((m) => m.id === jordan)!.games).toEqual([]);
+    const orphan = (await getSession(ctx.group.id, lobby.id))!;
+    expect(orphan.session.gameId).toBeNull();
+    expect(sessionGame(ctx, orphan.session).game.name).toBe("Game");
+    await endSession(ctx, lobby.id);
+  });
+
+  it("each have their own lobby, and /back finds the right one", async () => {
+    const at = DateTime.fromISO("2031-06-10T20:00", { zone: "America/Chicago" }).toMillis();
+    const v = await startLive(val(), "demo-kai", at);
+    const t = await startLive(game("TFT"), "demo-rosa", at);
+    try {
+      expect(t.sessionId).not.toBe(v.sessionId);
+      expect((await openLobbies(ctx.group, at)).map((l) => l.session.id).sort()).toEqual([v.sessionId, t.sessionId].sort());
+      const ids = async (who: string) => (await lobbiesFor(ctx, who, at)).map((l) => l.session.id);
+      expect(await ids("demo-kai")).toEqual([v.sessionId]); // he's in it
+      expect(await ids("demo-sam")).toEqual([v.sessionId]); // TFT isn't his game
+      expect(await ids("demo-maya")).toEqual([]); // plays both, hasn't picked one
+      await setPlayerStatus(ctx, t.sessionId, "demo-maya", "declined");
+      expect(await ids("demo-maya")).toEqual([v.sessionId]); // said "Not tonight" to TFT
+
+      const back = await setAwayUntil(ctx, "demo-sam", "now", at + 5 * 60_000);
+      expect(back.lobbies).toEqual([{ sessionId: v.sessionId, before: "forming", game: "Valorant" }]);
+
+      // Each lobby counts to its own game's party size, and only pings that game's players.
+      const s = (await getSession(ctx.group.id, t.sessionId))!;
+      const msg = lobbyMessage(ctx, s.session, summarizeLive(2, s.players), []);
+      expect(msg.content).toContain("🎮 **TFT: who's in?** 1/2, need 1 more");
+      expect(freeNowNotInLobby(game("TFT"), []).every((id) => byName("TFT").players.includes(id))).toBe(true);
+    } finally {
+      await endSession(ctx, v.sessionId);
+      await endSession(ctx, t.sessionId);
+    }
+  });
+
+  it("/lfg asks which game when you play several, and the pick opens that game's lobby", async () => {
+    const picker = await handleInteraction({ ...base, type: 2, data: { name: "lfg" } }, () => {});
+    expect(picker).toMatchObject({ type: 4, data: { flags: 64 } });
+    const buttons = picker.data!.components!.flatMap((r) => r.components.map((b) => b.custom_id));
+    expect(buttons).toEqual(gamesOf(ctx, "demo-kai").map((g) => `lfgnew:${g.id}`)); // Valorant, League, Aion 2
+    assertDiscordLimits(picker.data!);
+
+    const unknown = await handleInteraction({ ...base, type: 2, data: { name: "lfg", options: [{ name: "game", value: "chess" }] } }, () => {});
+    expect(unknown.data!.content).toMatch(/don't know a game called “chess”/);
+
+    const aion = byName("Aion 2");
+    const opened = await handleInteraction(
+      { ...base, type: 3, data: { custom_id: `lfgnew:${aion.id}` }, message: { id: "picker", channel_id: "chan" } },
+      () => {},
+    );
+    try {
+      expect(opened.type).toBe(4); // a new post, public
+      expect(opened.data!.flags).toBeUndefined();
+      expect(opened.data!.content).toContain("🎮 **Aion 2: who's in?** 1/4, need 3 more");
+      assertDiscordLimits(opened.data!);
+    } finally {
+      const live = await activeLive(ctx.group, Date.now(), aion.id);
+      if (live) await endSession(ctx, live.session.id);
+    }
+  });
+
+  it("/windows shows your games, or the one you name", async () => {
+    const mine = await handleInteraction({ ...base, type: 2, data: { name: "windows" } }, () => {});
+    for (const g of gamesOf(ctx, "demo-kai")) expect(mine.data!.content).toContain(`**${g.name}**`);
+    expect(mine.data!.content).not.toContain("**TFT**");
+    assertDiscordLimits(mine.data!);
+    const one = await handleInteraction({ ...base, type: 2, data: { name: "windows", options: [{ name: "game", value: "tft" }] } }, () => {});
+    expect(one.data!.content).toContain("**TFT** (duo)");
+    expect(one.data!.content).not.toContain("**Valorant**");
+  });
+
+  it("are suggested as you type, yours first", async () => {
+    const ask = (value: string) =>
+      handleAutocomplete({ ...base, type: 4, data: { name: "lfg", options: [{ name: "game", value, focused: true }] } });
+    const all = await ask("");
+    expect(all.type).toBe(8);
+    const theirs = gamesOf(ctx, "demo-kai");
+    expect(all.data.choices.map((c) => c.value)).toEqual([...theirs, ...ctx.games.filter((g) => !theirs.includes(g))].map((g) => g.id));
+    expect((await ask("LEG")).data.choices).toEqual([
+      { name: "League of Legends (5-stack) · 4 players", value: byName("League of Legends").id },
+    ]);
   });
 });

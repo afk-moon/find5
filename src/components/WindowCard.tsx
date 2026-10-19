@@ -1,6 +1,6 @@
 import { sessionTimeline, type Pause, type PlayWindow } from "@/engine";
 import { fmtDay, fmtDuration, fmtRange, fmtTime, zoneAbbr } from "@/lib/format";
-import type { GroupContext } from "@/server/context";
+import type { GameContext } from "@/server/context";
 import { Avatar } from "./Avatar";
 import { LateTag } from "./LateTag";
 
@@ -28,18 +28,18 @@ export function TimelineBar({ startMs, endMs, pauses }: { startMs: number; endMs
   );
 }
 
-/** Session plan in the viewer's zone: last comp queue, dinner pauses, wrap-up. */
+/** Session plan in the viewer's zone: last queue, dinner pauses, wrap-up. */
 export function SessionPlan({
   ctx,
   w,
   zone,
 }: {
-  ctx: GroupContext;
+  ctx: GameContext;
   w: Pick<PlayWindow, "startMs" | "endMs" | "pauses">;
   zone: string;
 }) {
   const nameOf = (id: string) => ctx.byId.get(id)?.name ?? "someone";
-  const events = sessionTimeline(w, ctx.group.matchLengthMinutes).filter(
+  const events = sessionTimeline(w, ctx.game.matchMinutes).filter(
     (e) => e.kind === "last-queue" || e.kind === "pause",
   );
   if (!events.length) return null;
@@ -53,7 +53,7 @@ export function SessionPlan({
           </li>
         ) : (
           <li key={i}>
-            ⏰ <span className="text-bone">{fmtTime(e.atMs, zone)}</span> last comp queue
+            ⏰ <span className="text-bone">{fmtTime(e.atMs, zone)}</span> last queue
             {e.kind === "last-queue" && e.reason === "pause" ? " before dinner" : ""}
           </li>
         ),
@@ -68,12 +68,12 @@ export function WindowCard({
   zone,
   action,
 }: {
-  ctx: GroupContext;
+  ctx: GameContext;
   w: PlayWindow;
   zone: string;
   action?: React.ReactNode;
 }) {
-  const P = ctx.group.partySize;
+  const P = ctx.game.partySize;
   return (
     <div className="card space-y-3">
       <div className="flex flex-wrap items-start justify-between gap-2">

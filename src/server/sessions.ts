@@ -3,7 +3,7 @@ import { DateTime } from "luxon";
 import { getDb } from "@/db";
 import { playSessionPlayers, playSessions, type PlayerStatus, type SessionPlan } from "@/db/schema";
 import type { PlayWindow } from "@/engine";
-import type { GroupContext } from "./context";
+import type { GameContext, GroupContext } from "./context";
 import { findWindowByBounds } from "./windows";
 
 export type PlaySession = typeof playSessions.$inferSelect;
@@ -55,8 +55,8 @@ export function planFromWindow(w: PlayWindow): SessionPlan {
 
 // ─── Planned sessions ──────────────────────────────────────────────────────────────────────
 
-/** Lock in a suggested window. The window is re-computed server-side; returns the session and window. */
-export async function lockInWindow(ctx: GroupContext, userId: string, startMs: number, endMs: number) {
+/** Lock in one of a game's suggested windows. The window is re-computed server-side; returns the session and window. */
+export async function lockInWindow(ctx: GameContext, userId: string, startMs: number, endMs: number) {
   const window = findWindowByBounds(ctx, startMs, endMs);
   if (!window) throw new Error("That window isn't available anymore. Someone's availability changed.");
   const db = await getDb();
@@ -66,6 +66,7 @@ export async function lockInWindow(ctx: GroupContext, userId: string, startMs: n
     .where(
       and(
         eq(playSessions.groupId, ctx.group.id),
+        eq(playSessions.gameId, ctx.game.id),
         eq(playSessions.kind, "planned"),
         eq(playSessions.status, "active"),
         eq(playSessions.startAt, new Date(startMs)),
@@ -77,6 +78,7 @@ export async function lockInWindow(ctx: GroupContext, userId: string, startMs: n
     .insert(playSessions)
     .values({
       groupId: ctx.group.id,
+      gameId: ctx.game.id,
       kind: "planned",
       startAt: new Date(startMs),
       endAt: new Date(endMs),
@@ -140,19 +142,26 @@ export function lobbyExpired(session: PlaySession, nowMs: number, zone: string):
   return session.kind === "live" && session.startAt.getTime() < lobbyCutoff(nowMs, zone);
 }
 
-export async function activeLive(group: LobbyGroup, nowMs = Date.now()): Promise<SessionWithPlayers | null> {
-  const [live] = await findWithPlayers(
-    () =>
-      and(
-        eq(playSessions.groupId, group.id),
-        eq(playSessions.kind, "live"),
-        eq(playSessions.status, "active"),
-        gte(playSessions.startAt, new Date(lobbyCutoff(nowMs, group.homeTimezone))),
-      ),
-    "desc",
-    1,
+const openLobbyWhere = (group: LobbyGroup, nowMs: number, gameId?: string) =>
+  and(
+    eq(playSessions.groupId, group.id),
+    eq(playSessions.kind, "live"),
+    eq(playSessions.status, "active"),
+    gte(playSessions.startAt, new Date(lobbyCutoff(nowMs, group.homeTimezone))),
+    gameId ? eq(playSessions.gameId, gameId) : undefined,
   );
+
+/** The newest open lobby (for one game, if given). */
+export async function activeLive(group: LobbyGroup, nowMs = Date.now(), gameId?: string): Promise<SessionWithPlayers | null> {
+  const [live] = await findWithPlayers(() => openLobbyWhere(group, nowMs, gameId), "desc", 1);
   return live ?? null;
+}
+
+/** Every open lobby, newest first: one per game (each game has its own). */
+export async function openLobbies(group: LobbyGroup, nowMs = Date.now()): Promise<SessionWithPlayers[]> {
+  const all = await findWithPlayers(() => openLobbyWhere(group, nowMs), "desc", 20);
+  const seen = new Set<string | null>();
+  return all.filter((l) => !seen.has(l.session.gameId) && seen.add(l.session.gameId));
 }
 
 /** Lobbies still marked open after they expired (nobody tapped End): close them. Returns their ids. */
@@ -174,11 +183,14 @@ export async function closeExpiredLobbies(group: LobbyGroup, nowMs = Date.now())
 }
 
 /**
- * Open a lobby (or join the one that's open). Expired lobbies are closed first; `closed` lists them so their
- * Discord posts can be updated.
+ * Open a lobby for a game (or join that game's open one). Expired lobbies are closed first; `closed` lists
+ * them so their Discord posts can be updated.
  */
-export async function startLive(ctx: GroupContext, userId: string, nowMs = Date.now()) {
-  const [closed, existing] = await Promise.all([closeExpiredLobbies(ctx.group, nowMs), activeLive(ctx.group, nowMs)]);
+export async function startLive(ctx: GameContext, userId: string, nowMs = Date.now()) {
+  const [closed, existing] = await Promise.all([
+    closeExpiredLobbies(ctx.group, nowMs),
+    activeLive(ctx.group, nowMs, ctx.game.id),
+  ]);
   if (existing) {
     await setPlayerStatus(ctx, existing.session.id, userId, "in");
     return { sessionId: existing.session.id, created: false, closed };
@@ -186,10 +198,25 @@ export async function startLive(ctx: GroupContext, userId: string, nowMs = Date.
   const db = await getDb();
   const [session] = await db
     .insert(playSessions)
-    .values({ groupId: ctx.group.id, kind: "live", startAt: new Date(nowMs), createdBy: userId })
+    .values({ groupId: ctx.group.id, gameId: ctx.game.id, kind: "live", startAt: new Date(nowMs), createdBy: userId })
     .returning();
   await db.insert(playSessionPlayers).values({ sessionId: session.id, userId, status: "in" });
   return { sessionId: session.id, created: true, closed };
+}
+
+/**
+ * The open lobbies a member's /dinner and /back apply to: the ones they've joined (left counts, so /back
+ * rejoins), or else the open lobby of a game they play, if there's exactly one. Lobbies they said
+ * "Not tonight" to are skipped.
+ */
+export async function lobbiesFor(ctx: GroupContext, userId: string, nowMs = Date.now()): Promise<SessionWithPlayers[]> {
+  const open = await openLobbies(ctx.group, nowMs);
+  const statusIn = (l: SessionWithPlayers) => l.players.find((p) => p.userId === userId)?.status;
+  const candidates = open.filter((l) => statusIn(l) !== "declined");
+  const joined = candidates.filter((l) => statusIn(l));
+  if (joined.length) return joined;
+  const theirs = candidates.filter((l) => !!l.session.gameId && !!ctx.gameById.get(l.session.gameId)?.players.includes(userId));
+  return theirs.length === 1 ? theirs : [];
 }
 
 export async function setPlayerStatus(

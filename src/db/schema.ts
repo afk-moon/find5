@@ -95,6 +95,42 @@ export const groups = pgTable("groups", {
   createdAt: createdAt(),
 });
 
+/**
+ * Games the group plays. Windows, lobbies and locked-in sessions are per game, among the members who play
+ * it. (The group's own partySize / matchLengthMinutes are from before games existed; games have their own.)
+ */
+export const games = pgTable(
+  "games",
+  {
+    id: text("id").primaryKey().$defaultFn(uuid),
+    groupId: text("group_id")
+      .notNull()
+      .references(() => groups.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    /** Players needed to play together (5 for a Valorant stack). */
+    partySize: integer("party_size").notNull().default(5),
+    /** About how long one match takes, for "last queue before dinner" heads-ups. */
+    matchMinutes: integer("match_minutes").notNull().default(40),
+    createdBy: text("created_by").references(() => user.id, { onDelete: "set null" }),
+    createdAt: createdAt(),
+  },
+  (t) => [unique("games_group_name").on(t.groupId, t.name)],
+);
+
+/** Which games each member plays. */
+export const memberGames = pgTable(
+  "member_games",
+  {
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    gameId: text("game_id")
+      .notNull()
+      .references(() => games.id, { onDelete: "cascade" }),
+  },
+  (t) => [primaryKey({ columns: [t.userId, t.gameId] })],
+);
+
 export const memberships = pgTable(
   "memberships",
   {
@@ -210,6 +246,8 @@ export const playSessions = pgTable("play_sessions", {
     .notNull()
     .references(() => groups.id, { onDelete: "cascade" }),
   kind: text("kind", { enum: ["planned", "live"] }).notNull(),
+  /** Which game it's for. Null only if that game was removed. */
+  gameId: text("game_id").references(() => games.id, { onDelete: "set null" }),
   status: text("status", { enum: ["active", "ended", "cancelled"] }).notNull().default("active"),
   startAt: timestamp("start_at", { withTimezone: true }).notNull(),
   endAt: timestamp("end_at", { withTimezone: true }),

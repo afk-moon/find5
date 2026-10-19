@@ -9,7 +9,7 @@ import {
   type Horizon,
   type PlayWindow,
 } from "@/engine";
-import type { GroupContext, MemberView } from "./context";
+import type { GameContext, GroupContext, MemberView } from "./context";
 
 /** From a few hours ago (to catch sessions in progress) through the next 7 days. */
 export function upcomingHorizon(ctx: GroupContext, nowMs = Date.now(), days = 7): Horizon {
@@ -20,14 +20,14 @@ export function upcomingHorizon(ctx: GroupContext, nowMs = Date.now(), days = 7)
   return makeHorizon(nowMs - 6 * 3_600_000, end);
 }
 
-/** Best non-overlapping windows that haven't ended yet. */
-export function upcomingWindows(ctx: GroupContext, nowMs = Date.now()): PlayWindow[] {
+/** A game's best non-overlapping windows that haven't ended yet, among the people who play it. */
+export function upcomingWindows(ctx: GameContext, nowMs = Date.now()): PlayWindow[] {
   const all = findWindows(ctx.inputs, upcomingHorizon(ctx, nowMs), ctx.settings);
   return selectBestWindows(all).filter((w) => w.endMs > nowMs);
 }
 
 /** Re-find a window by its exact bounds (never trust window data sent from the client). */
-export function findWindowByBounds(ctx: GroupContext, startMs: number, endMs: number, nowMs = Date.now()) {
+export function findWindowByBounds(ctx: GameContext, startMs: number, endMs: number, nowMs = Date.now()) {
   return findWindows(ctx.inputs, upcomingHorizon(ctx, nowMs), ctx.settings).find(
     (w) => w.startMs === startMs && w.endMs === endMs,
   );
@@ -79,8 +79,8 @@ export interface HeatRow {
   cells: Array<{ startMs: number; count: number; dinner: number; inWindow: boolean; past: boolean }>;
 }
 
-/** Week at a glance in the viewer's zone: how many people are free in each half hour, noon → 2am. */
-export function weekHeat(ctx: GroupContext, zone: string, windows: PlayWindow[], nowMs = Date.now()): HeatRow[] {
+/** Week at a glance in the viewer's zone: how many of a game's players are free in each half hour, noon → 2am. */
+export function weekHeat(ctx: GameContext, zone: string, windows: PlayWindow[], nowMs = Date.now()): HeatRow[] {
   const today = DateTime.fromMillis(nowMs, { zone }).startOf("day");
   const h = makeHorizon(today.set({ hour: 12 }).toMillis(), today.plus({ days: 8 }).set({ hour: 2 }).toMillis());
   const timelines = buildTimelines(ctx.inputs, h);

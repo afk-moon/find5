@@ -43,10 +43,15 @@ export interface WfhPlanArgs {
   ballots?: Readonly<Record<string, readonly Weekday[]>> | null;
   /** How many shared WFH days to pick (default 1). */
   sharedDays?: number;
+  /**
+   * Whose play time counts (the players of the game being planned for). Everyone in `members` can still
+   * vote and WFH; omit to count everyone.
+   */
+  players?: ReadonlySet<string> | null;
 }
 
 export function planWfhWeek(args: WfhPlanArgs): WfhPlan {
-  const { members, settings, weekStart, homeZone } = args;
+  const { members, settings, weekStart, homeZone, players } = args;
   const projected = !args.ballots;
   const sharedDays = Math.max(1, args.sharedDays ?? 1);
 
@@ -55,7 +60,8 @@ export function planWfhWeek(args: WfhPlanArgs): WfhPlan {
     DateTime.fromISO(addDays(weekStart, -1), { zone: homeZone }).toMillis(),
     DateTime.fromISO(addDays(weekStart, 7), { zone: homeZone }).plus({ hours: 12 }).toMillis(),
   );
-  const evaluate = (ms: readonly MemberInput[]) => {
+  const evaluate = (all: readonly MemberInput[]) => {
+    const ms = players ? all.filter((m) => players.has(m.id)) : all;
     const best = selectBestWindows(findWindows(ms, horizon, settings));
     return {
       best,

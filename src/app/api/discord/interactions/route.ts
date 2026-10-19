@@ -1,5 +1,5 @@
 import { after } from "next/server";
-import { handleInteraction, type Interaction } from "@/discord/handlers";
+import { handleAutocomplete, handleInteraction, type Interaction } from "@/discord/handlers";
 import { verifyDiscordRequest } from "@/discord/verify";
 
 /** Discord "Interactions Endpoint URL": slash commands and button clicks arrive here as signed POSTs. */
@@ -13,8 +13,12 @@ export async function POST(req: Request) {
   );
   if (!valid) return new Response("invalid request signature", { status: 401 });
 
+  const interaction = JSON.parse(raw) as Interaction;
+  // Autocomplete (suggestions while typing a game) only takes choices back, and has no follow-up work.
+  if (interaction.type === 4) return Response.json(await handleAutocomplete(interaction));
+
   const tasks: Array<() => Promise<unknown>> = [];
-  const response = await handleInteraction(JSON.parse(raw) as Interaction, (task) => tasks.push(task));
+  const response = await handleInteraction(interaction, (task) => tasks.push(task));
   if (tasks.length) {
     after(async () => {
       for (const task of tasks) {

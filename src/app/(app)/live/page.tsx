@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { liveAction, startLfgAction, type LiveAction } from "@/app/actions";
 import { ActionButton } from "@/components/ActionButton";
 import { Avatar } from "@/components/Avatar";
@@ -5,56 +6,117 @@ import { AutoRefresh } from "@/components/client";
 import { MemberName } from "@/components/LateTag";
 import { currentGamingDay, vacationOn } from "@/engine";
 import { fmtDate, fmtRelative, fmtTime, zoneAbbr } from "@/lib/format";
-import { requestTime, requireMember, requireViewer, type MemberView } from "@/server/context";
-import { activeLive, summarizeLive } from "@/server/sessions";
+import {
+  gamesOf,
+  requestTime,
+  requireMember,
+  requireViewer,
+  sessionGame,
+  type GameContext,
+  type MemberView,
+} from "@/server/context";
+import { openLobbies, summarizeLive, type SessionWithPlayers } from "@/server/sessions";
 import { membersNow, type MemberNow } from "@/server/windows";
 
 export default async function LivePage() {
   const { groupId, homeTimezone } = await requireMember();
   const now = requestTime();
-  const [{ me, ctx }, live] = await Promise.all([requireViewer(), activeLive({ id: groupId, homeTimezone }, now)]);
+  const [{ me, ctx }, lobbies] = await Promise.all([requireViewer(), openLobbies({ id: groupId, homeTimezone }, now)]);
   const zone = me.timezone;
-  const P = ctx.group.partySize;
   const status = membersNow(ctx, now);
   const statusOf = new Map(status.map((s) => [s.member.id, s]));
+  const isFree = (id: string) => {
+    const s = statusOf.get(id);
+    return !!s && (s.state === "F" || s.state === "M");
+  };
+  const mine = gamesOf(ctx, me.id);
+  const hasLobby = new Set(lobbies.map((l) => l.session.gameId));
+  // Their games that don't have a lobby open yet, most free right now first.
+  const startable = mine
+    .filter((g) => !hasLobby.has(g.id))
+    .map((g) => ({ g, free: g.players.filter(isFree).length }))
+    .sort((a, b) => b.free - a.free);
 
-  if (!live) {
-    const free = status.filter((s) => s.state === "F" || s.state === "M");
-    return (
-      <div className="mx-auto max-w-3xl space-y-5">
-        <AutoRefresh seconds={30} />
-        <div>
-          <h1 className="h1">Live lobby</h1>
-          <p className="mt-1 text-sm text-muted">
-            Spontaneous game? Open a lobby. Whoever&apos;s free gets pinged (in Discord, if it&apos;s connected),
-            and it fills up to {P}.
-          </p>
+  return (
+    <div className="mx-auto max-w-3xl space-y-5">
+      <AutoRefresh seconds={lobbies.length ? 10 : 30} />
+      <div>
+        <h1 className="h1">Live lobby</h1>
+        <p className="mt-1 text-sm text-muted">
+          Spontaneous game? Open a lobby for it. Whoever plays it and is free gets pinged (in Discord, if it&apos;s
+          connected), and it fills up to that game&apos;s party size.
+        </p>
+      </div>
+
+      {lobbies.map((live) => (
+        <LobbyCard key={live.session.id} live={live} game={sessionGame(ctx, live.session)} me={me} zone={zone} now={now} statusOf={statusOf} />
+      ))}
+
+      {mine.length === 0 ? (
+        <div className="card text-sm">
+          🎮 Pick the games you play on{" "}
+          <Link className="text-val underline" href="/availability">
+            My availability
+          </Link>{" "}
+          to open lobbies for them.
         </div>
-        <div className="card flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <div className="font-semibold">No lobby open</div>
-            <div className="text-sm text-muted">
-              {free.length} of {ctx.members.length} free right now{free.length >= P ? ": enough for a full party 🎉" : ""}
-            </div>
+      ) : (
+        startable.length > 0 && (
+          <div className="card space-y-3">
+            <div className="label">{lobbies.length ? "Start another lobby" : "No lobby open"}</div>
+            {startable.map(({ g, free }) => (
+              <div key={g.id} className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <div className="font-semibold">{g.name}</div>
+                  <div className="text-sm text-muted">
+                    {free} of {g.players.length} free right now
+                    {free >= g.partySize ? ": enough for a full party 🎉" : ` · needs ${g.partySize}`}
+                  </div>
+                </div>
+                <ActionButton className="btn btn-primary" action={startLfgAction.bind(null, g.id)} pendingLabel="Opening…">
+                  Start LFG
+                </ActionButton>
+              </div>
+            ))}
           </div>
-          <ActionButton className="btn btn-primary" action={startLfgAction} pendingLabel="Opening…">
-            Start LFG
-          </ActionButton>
-        </div>
+        )
+      )}
+
+      {lobbies.length === 0 && (
         <div className="card space-y-2">
           <div className="label">Everyone right now</div>
           {status.map((s) => (
             <StatusRow key={s.member.id} s={s} zone={zone} now={now} />
           ))}
         </div>
-      </div>
-    );
-  }
+      )}
+    </div>
+  );
+}
 
+/** One game's open lobby: who's in, buttons for the viewer, who hasn't answered, and dinner heads-ups. */
+function LobbyCard({
+  live,
+  game,
+  me,
+  zone,
+  now,
+  statusOf,
+}: {
+  live: SessionWithPlayers;
+  game: GameContext;
+  me: MemberView;
+  zone: string;
+  now: number;
+  statusOf: Map<string, MemberNow>;
+}) {
+  const ctx = game;
+  const P = game.game.partySize;
   const summary = summarizeLive(P, live.players);
   const mine = live.players.find((p) => p.userId === me.id)?.status;
   const answered = new Set(live.players.map((p) => p.userId));
-  const waiting = ctx.members.filter((m) => !answered.has(m.id));
+  // Only people who play this game are waited on.
+  const waiting = game.members.filter((m) => !answered.has(m.id));
   const name = (id: string) => ctx.byId.get(id);
   const act = (a: LiveAction) => liveAction.bind(null, live.session.id, a);
 
@@ -65,22 +127,21 @@ export default async function LivePage() {
         ? "⏸️ Paused: waiting on a quick dinner"
         : `🎮 ${summary.playing.length}/${P} in, need ${summary.needed} more`;
 
-  // Upcoming dinners for people in the lobby, with the last sensible comp queue.
+  // Upcoming dinners for people in the lobby, with the last sensible queue.
   const headsUps = summary.playing
     .map((id) => statusOf.get(id))
     .filter((s): s is MemberNow => !!s?.nextDinner && s.nextDinner.startMs > now && s.nextDinner.startMs - now < 4 * 3_600_000);
 
   return (
-    <div className="mx-auto max-w-3xl space-y-5">
-      <AutoRefresh seconds={10} />
+    <div className="space-y-3">
       <div className="flex flex-wrap items-end justify-between gap-2">
         <div>
-          <h1 className="h1">Live lobby</h1>
+          <h2 className="text-lg font-bold">{game.game.name}</h2>
           <p className="text-sm text-muted">
             Opened {fmtRelative(live.session.startAt.getTime(), now)} by {name(live.session.createdBy ?? "")?.name ?? "someone"}
           </p>
         </div>
-        <ActionButton className="btn btn-ghost text-xs" action={act("end")} confirm="End this lobby for everyone?">
+        <ActionButton className="btn btn-ghost text-xs" action={act("end")} confirm={`End the ${game.game.name} lobby for everyone?`}>
           End lobby
         </ActionButton>
       </div>
@@ -176,8 +237,8 @@ export default async function LivePage() {
           {headsUps.map((s) => (
             <div key={s.member.id}>
               {s.nextDinner!.kind === "Q" ? "🍔" : "🍝"} <b>{s.member.name}</b> eats at {fmtTime(s.nextDinner!.startMs, zone)} (
-              {s.nextDinner!.kind === "Q" ? "quick" : "long"}). Last comp queue ~
-              {fmtTime(s.nextDinner!.startMs - ctx.group.matchLengthMinutes * 60_000, zone)} {zoneAbbr(zone)}.
+              {s.nextDinner!.kind === "Q" ? "quick" : "long"}). Last queue ~
+              {fmtTime(s.nextDinner!.startMs - game.game.matchMinutes * 60_000, zone)} {zoneAbbr(zone)}.
             </div>
           ))}
         </div>

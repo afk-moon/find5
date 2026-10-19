@@ -12,7 +12,8 @@ import { MemberName } from "@/components/LateTag";
 import { botConfigured } from "@/discord/rest";
 import type { PlayWindow, Weekday } from "@/engine";
 import { WEEKDAY_LONG, fmtDate, fmtDuration, fmtRange, zoneAbbr } from "@/lib/format";
-import { requireViewer } from "@/server/context";
+import { partyLabel } from "@/lib/games";
+import { mainGame, requireViewer } from "@/server/context";
 import { getWfhState, weekStartOf } from "@/server/wfh";
 
 export default async function WfhPage({ searchParams }: { searchParams: Promise<{ week?: string }> }) {
@@ -24,7 +25,9 @@ export default async function WfhPage({ searchParams }: { searchParams: Promise<
   const weekStart = week && /^\d{4}-\d{2}-\d{2}$/.test(week) ? week : nextWeek;
   const state = await getWfhState(ctx, weekStart);
 
-  const P = ctx.group.partySize;
+  // Play time here is counted for the game most of the group plays, among the people who play it.
+  const main = mainGame(ctx).game;
+  const stack = `${main.name} ${partyLabel(main.partySize)}`;
   const zone = me.timezone;
   const open = state.vote?.status !== "closed";
   const decided = (state.vote?.decidedDays ?? []) as Weekday[];
@@ -43,7 +46,7 @@ export default async function WfhPage({ searchParams }: { searchParams: Promise<
           <h1 className="h1">WFH sync</h1>
           <p className="mt-1 max-w-2xl text-sm text-muted">
             Hybrid folks tap every day they <em>could</em> work from home. The day the most of you can share wins;
-            ties go to the day that unlocks the most {P}-stack time (earlier starts, later nights before WFH).
+            ties go to the day that unlocks the most {stack} time (earlier starts, later nights before WFH).
           </p>
         </div>
         <div className="flex gap-1">
@@ -162,7 +165,7 @@ export default async function WfhPage({ searchParams }: { searchParams: Promise<
                     <span className={o.gainMinutes > 0 ? "font-semibold text-free" : ""}>
                       {o.gainMinutes > 0 ? `Up to +${fmtDuration(o.gainMinutes)}` : "No extra"}
                     </span>{" "}
-                    {P}-stack time this week
+                    {stack} time this week
                   </div>
                 ) : null}
                 {current && !state.plan.projected && current.approvers.length > 0 && (

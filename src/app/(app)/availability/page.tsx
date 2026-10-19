@@ -1,13 +1,15 @@
 import { DateTime } from "luxon";
 import { EMPTY_PATTERN, currentGamingDay, isWfhDate, resolvePattern, vacationOn } from "@/engine";
 import { fmtDate, zoneAbbr } from "@/lib/format";
+import { partyLabel } from "@/lib/games";
 import { requestTime, requireViewer, toEngineInput } from "@/server/context";
 import { AvailabilityEditor, type DateEntry } from "./AvailabilityEditor";
+import { MyGamesCard } from "./MyGamesCard";
 import { ProfileForm } from "./ProfileForm";
 import { VacationCard, type VacationItem } from "./VacationCard";
 
 export default async function AvailabilityPage() {
-  const { me } = await requireViewer();
+  const { me, ctx } = await requireViewer();
   const input = toEngineInput(me);
 
   const week: Record<number, string> = {};
@@ -62,6 +64,12 @@ export default async function AvailabilityPage() {
           zoneLabel={`${zoneAbbr(me.timezone)} (${me.timezone})`}
         />
         <div className="space-y-6">
+          <MyGamesCard
+            games={[...ctx.games]
+              .sort((a, b) => a.addedAt - b.addedAt)
+              .map((g) => ({ id: g.id, name: g.name, party: partyLabel(g.partySize), players: g.players.length }))}
+            mine={me.games}
+          />
           <VacationCard vacations={vacations} today={todayDate} />
           <ProfileForm
             profile={{

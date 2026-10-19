@@ -1,12 +1,15 @@
 import { DateTime } from "luxon";
 import { pattern } from "@/engine/patterns";
 import type { HybridMode, Weekday } from "@/engine/types";
+import { DEFAULT_GAMES, defaultGameId, defaultGameRows } from "@/lib/games";
 import type { DB } from "./index";
 import {
   dayPatterns,
+  games,
   groups,
   hybridDays,
   lateReports,
+  memberGames,
   memberProfiles,
   memberships,
   playSessionPlayers,
@@ -107,6 +110,14 @@ export const DEMO_MEMBERS: DemoMember[] = [
 export const DEMO_GROUP_ID = "demo-squad";
 const HOME_ZONE = "America/Chicago";
 
+/** Who plays what: everyone plays Valorant, TFT is a duo, Aion 2 has its four, and League is one short. */
+const DEMO_PLAYERS: Record<(typeof DEFAULT_GAMES)[number]["slug"], string[]> = {
+  valorant: ["demo-maya", "demo-dev", "demo-rosa", "demo-kai", "demo-sam"],
+  lol: ["demo-maya", "demo-dev", "demo-kai", "demo-sam"],
+  tft: ["demo-maya", "demo-rosa"],
+  aion2: ["demo-dev", "demo-rosa", "demo-kai", "demo-sam"],
+};
+
 /**
  * Past locked-in sessions (6:30pm PT, all five players) and who reported whom as late.
  * Sam counts as late in 6 of the last 10 (frequently late); Dev in 1. One report alone never counts,
@@ -137,6 +148,7 @@ async function seedSession(
     .insert(playSessions)
     .values({
       groupId: DEMO_GROUP_ID,
+      gameId: defaultGameId("valorant", DEMO_GROUP_ID),
       kind: "planned",
       status,
       startAt: new Date(startMs),
@@ -157,6 +169,7 @@ async function seedSession(
 export async function seedDemo(db: DB) {
   await db.insert(groups).values({ id: DEMO_GROUP_ID, name: "Valorant Squad", homeTimezone: HOME_ZONE });
   const seededAt = Date.now() - 60_000;
+  await db.insert(games).values(defaultGameRows(DEMO_GROUP_ID, seededAt));
 
   for (const [i, m] of DEMO_MEMBERS.entries()) {
     await db.insert(user).values({ id: m.id, name: m.name, email: `${m.id}@demo.receptionist.local` });
@@ -184,6 +197,11 @@ export async function seedDemo(db: DB) {
       );
     }
   }
+  await db.insert(memberGames).values(
+    Object.entries(DEMO_PLAYERS).flatMap(([slug, ids]) =>
+      ids.map((userId) => ({ userId, gameId: defaultGameId(slug, DEMO_GROUP_ID) })),
+    ),
+  );
 
   // One-off: Dev is out until 9pm CT this coming Friday.
   const now = DateTime.now().setZone(HOME_ZONE);

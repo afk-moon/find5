@@ -21,7 +21,8 @@ import {
   setWfhDate,
   type ProfileInput,
 } from "@/server/availability";
-import { loadGroupContext, requireViewer } from "@/server/context";
+import { forGame, loadGroupContext, requireViewer, sessionGame, type GroupContext } from "@/server/context";
+import { addGame, removeGame, setMemberGames, updateGame } from "@/server/games";
 import { toggleLateReport } from "@/server/lateness";
 import { announceLockIn, announceWfhDecision, syncLobby, syncPlannedMessage, syncWfhVote } from "@/server/notify";
 import { SESSION_COOKIE } from "@/server/session-cookie";
@@ -147,11 +148,19 @@ export async function saveProfileAction(input: ProfileInput): Promise<ActionResu
 
 // ─── Planned sessions ──────────────────────────────────────────────────────────────────────
 
-export async function lockInAction(startMs: number, endMs: number): Promise<ActionResult> {
+/** The group narrowed to one of its games (ids come from the client, so check them). */
+function gameCtx(ctx: GroupContext, gameId: string) {
+  const game = ctx.gameById.get(gameId);
+  if (!game) throw new Error("That game isn't in this group anymore.");
+  return forGame(ctx, game);
+}
+
+export async function lockInAction(gameId: string, startMs: number, endMs: number): Promise<ActionResult> {
   const { ctx, userId } = await requireViewer();
   try {
-    const { session, window, created } = await lockInWindow(ctx, userId, startMs, endMs);
-    if (created) await announceLockIn(ctx, session, window);
+    const game = gameCtx(ctx, gameId);
+    const { session, window, created } = await lockInWindow(game, userId, startMs, endMs);
+    if (created) await announceLockIn(game, session, window);
     refreshAll();
     return { ok: true, message: created ? "Locked in 🔒" : "Already locked in" };
   } catch (e) {
@@ -185,13 +194,14 @@ export async function toggleLateReportAction(sessionId: string, lateUserId: stri
 
 // ─── Live lobby ────────────────────────────────────────────────────────────────────────────
 
-export async function startLfgAction(): Promise<ActionResult> {
+export async function startLfgAction(gameId: string): Promise<ActionResult> {
   const { ctx, userId } = await requireViewer();
   try {
-    const { sessionId, created, closed } = await startLive(ctx, userId);
+    const game = gameCtx(ctx, gameId);
+    const { sessionId, created, closed } = await startLive(game, userId);
     await Promise.all([syncLobby(ctx, sessionId), ...closed.map((id) => syncLobby(ctx, id))]);
     refreshAll();
-    return { ok: true, message: created ? "Lobby open" : "Joined the lobby" };
+    return { ok: true, message: created ? `${game.game.name} lobby open` : `Joined the ${game.game.name} lobby` };
   } catch (e) {
     return actionError(e);
   }
@@ -204,7 +214,7 @@ export async function liveAction(sessionId: string, action: LiveAction): Promise
   try {
     const s = await getSession(ctx.group.id, sessionId);
     if (!s || s.session.status !== "active") throw new Error("That lobby is closed.");
-    const before = summarizeLive(ctx.group.partySize, s.players).state;
+    const before = summarizeLive(sessionGame(ctx, s.session).game.partySize, s.players).state;
     switch (action) {
       case "in":
       case "back":
@@ -306,8 +316,10 @@ export async function postVoteToDiscordAction(weekStart: string): Promise<Action
 
 export async function saveSettingsAction(formData: FormData) {
   const { ctx } = await requireViewer();
+  // A field that isn't in the form keeps its saved value.
   const int = (name: string, min: number, max: number, fallback: number) => {
-    const n = Math.round(Number(formData.get(name)));
+    const raw = formData.get(name);
+    const n = raw === null || raw === "" ? NaN : Math.round(Number(raw));
     return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : fallback;
   };
   const snowflake = (name: string) => {
@@ -322,10 +334,8 @@ export async function saveSettingsAction(formData: FormData) {
     .set({
       name: String(formData.get("name") ?? g.name).trim().slice(0, 60) || g.name,
       homeTimezone: isValidZone(homeTimezone) ? homeTimezone : g.homeTimezone,
-      partySize: int("partySize", 2, 10, g.partySize),
       minSessionMinutes: int("minSessionMinutes", 30, 360, g.minSessionMinutes),
       maxPauseMinutes: int("maxPauseMinutes", 0, 120, g.maxPauseMinutes),
-      matchLengthMinutes: int("matchLengthMinutes", 15, 90, g.matchLengthMinutes),
       wfhSharedDays: int("wfhSharedDays", 1, 3, g.wfhSharedDays),
       wfhVoteOpenWeekday: int("wfhVoteOpenWeekday", 1, 7, g.wfhVoteOpenWeekday),
       wfhVoteCloseWeekday: int("wfhVoteCloseWeekday", 1, 7, g.wfhVoteCloseWeekday),
@@ -336,4 +346,55 @@ export async function saveSettingsAction(formData: FormData) {
     .where(eq(groups.id, g.id));
   refreshAll();
   redirect("/settings?saved=1");
+}
+
+// ─── Games ─────────────────────────────────────────────────────────────────────────────────
+
+/** Pick the games you play (replaces your picks). */
+export async function setMyGamesAction(gameIds: string[]): Promise<ActionResult> {
+  const { ctx, userId } = await requireViewer();
+  try {
+    const picked = await setMemberGames(ctx, userId, gameIds);
+    refreshAll();
+    return { ok: true, message: picked.length ? "Games saved" : "No games picked: you won't show up in any windows" };
+  } catch (e) {
+    return actionError(e);
+  }
+}
+
+/** Add a game to the group. You're signed up for it. */
+export async function addGameAction(name: string, partySize: number): Promise<ActionResult> {
+  const { ctx, userId } = await requireViewer();
+  try {
+    const game = await addGame(ctx, userId, { name, partySize });
+    refreshAll();
+    return { ok: true, message: `Added ${game.name}` };
+  } catch (e) {
+    return actionError(e);
+  }
+}
+
+export async function updateGameAction(
+  gameId: string,
+  input: { name: string; partySize: number; matchMinutes: number },
+): Promise<ActionResult> {
+  const { ctx } = await requireViewer();
+  try {
+    await updateGame(ctx, gameId, input);
+    refreshAll();
+    return { ok: true, message: "Saved" };
+  } catch (e) {
+    return actionError(e);
+  }
+}
+
+export async function removeGameAction(gameId: string): Promise<ActionResult> {
+  const { ctx } = await requireViewer();
+  try {
+    await removeGame(ctx, gameId);
+    refreshAll();
+    return { ok: true, message: "Removed" };
+  } catch (e) {
+    return actionError(e);
+  }
 }

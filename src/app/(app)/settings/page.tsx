@@ -6,6 +6,7 @@ import { WEEKDAY_LONG, zoneAbbr } from "@/lib/format";
 import { US_TIMEZONES } from "@/lib/zones";
 import { discordLoginConfigured } from "@/server/auth";
 import { requireViewer } from "@/server/context";
+import { GamesCard } from "./GamesCard";
 
 export default async function SettingsPage({ searchParams }: { searchParams: Promise<{ saved?: string }> }) {
   const { ctx } = await requireViewer();
@@ -26,82 +27,84 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
 
   return (
     <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_360px]">
-      <form action={saveSettingsAction} className="card space-y-5">
-        <div className="flex items-center justify-between">
-          <h1 className="h1">Group settings</h1>
-          {saved && <span className="chip text-free">Saved ✓</span>}
-        </div>
+      <div className="min-w-0 space-y-6">
+        <form action={saveSettingsAction} className="card space-y-5">
+          <div className="flex items-center justify-between">
+            <h1 className="h1">Group settings</h1>
+            {saved && <span className="chip text-free">Saved ✓</span>}
+          </div>
 
-        <div className="grid gap-4 sm:grid-cols-2">
-          <Field label="Group name">
-            <input name="name" defaultValue={g.name} className="input w-full" />
-          </Field>
-          <Field label="Home time zone" hint="Used for week boundaries and the WFH vote schedule">
-            <select name="homeTimezone" defaultValue={g.homeTimezone} className="input w-full">
-              {US_TIMEZONES.map((z) => (
-                <option key={z.value} value={z.value}>
-                  {z.label}
-                </option>
-              ))}
-            </select>
-          </Field>
-        </div>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field label="Group name">
+              <input name="name" defaultValue={g.name} className="input w-full" />
+            </Field>
+            <Field label="Home time zone" hint="Used for week boundaries and the WFH vote schedule">
+              <select name="homeTimezone" defaultValue={g.homeTimezone} className="input w-full">
+                {US_TIMEZONES.map((z) => (
+                  <option key={z.value} value={z.value}>
+                    {z.label}
+                  </option>
+                ))}
+              </select>
+            </Field>
+          </div>
 
-        <div className="label">Matching</div>
-        <div className="grid gap-4 sm:grid-cols-2">
-          <Field label="Party size" hint="5 for a full stack; members beyond this become subs">
-            <input name="partySize" type="number" min={2} max={10} defaultValue={g.partySize} className="input w-full" />
-          </Field>
-          <Field label="Minimum play time" hint="Pauses don't count">
-            {select("minSessionMinutes", g.minSessionMinutes, [
-              [60, "1 hour"],
-              [90, "1.5 hours"],
-              [120, "2 hours"],
-              [150, "2.5 hours"],
-              [180, "3 hours"],
-            ])}
-          </Field>
-          <Field label="Quick dinner = the party waits up to" hint="Longer dinners split the session">
-            {select("maxPauseMinutes", g.maxPauseMinutes, [
-              [0, "Never wait"],
-              [30, "30 min"],
-              [60, "1 hour"],
-              [90, "1.5 hours"],
-            ])}
-          </Field>
-          <Field label="Comp match length (min)" hint="For “last comp queue” heads-ups">
-            <input name="matchLengthMinutes" type="number" min={15} max={90} defaultValue={g.matchLengthMinutes} className="input w-full" />
-          </Field>
-        </div>
+          <div className="label">Matching</div>
+          <p className="-mt-3 text-xs text-muted">Party size and match length are per game: see Games below.</p>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field label="Minimum play time" hint="Pauses don't count">
+              {select("minSessionMinutes", g.minSessionMinutes, [
+                [60, "1 hour"],
+                [90, "1.5 hours"],
+                [120, "2 hours"],
+                [150, "2.5 hours"],
+                [180, "3 hours"],
+              ])}
+            </Field>
+            <Field label="Quick dinner = the party waits up to" hint="Longer dinners split the session">
+              {select("maxPauseMinutes", g.maxPauseMinutes, [
+                [0, "Never wait"],
+                [30, "30 min"],
+                [60, "1 hour"],
+                [90, "1.5 hours"],
+              ])}
+            </Field>
+          </div>
 
-        <div className="label">WFH sync</div>
-        <div className="grid gap-4 sm:grid-cols-3">
-          <Field label="Shared WFH days / week">
-            {select("wfhSharedDays", g.wfhSharedDays, [
-              [1, "1 day"],
-              [2, "2 days"],
-              [3, "3 days"],
-            ])}
-          </Field>
-          <Field label="Vote opens (for next week)">{select("wfhVoteOpenWeekday", g.wfhVoteOpenWeekday, weekdays)}</Field>
-          <Field label="Vote closes">{select("wfhVoteCloseWeekday", g.wfhVoteCloseWeekday, weekdays)}</Field>
-        </div>
+          <div className="label">WFH sync</div>
+          <div className="grid gap-4 sm:grid-cols-3">
+            <Field label="Shared WFH days / week">
+              {select("wfhSharedDays", g.wfhSharedDays, [
+                [1, "1 day"],
+                [2, "2 days"],
+                [3, "3 days"],
+              ])}
+            </Field>
+            <Field label="Vote opens (for next week)">{select("wfhVoteOpenWeekday", g.wfhVoteOpenWeekday, weekdays)}</Field>
+            <Field label="Vote closes">{select("wfhVoteCloseWeekday", g.wfhVoteCloseWeekday, weekdays)}</Field>
+          </div>
 
-        <div className="label">Discord</div>
-        <div className="grid gap-4 sm:grid-cols-3">
-          <Field label="Server ID" hint="Auto-filled the first time someone uses the bot">
-            <input name="discordGuildId" defaultValue={g.discordGuildId ?? ""} className="input w-full" placeholder="e.g. 1234567890" />
-          </Field>
-          <Field label="Announcement channel ID">
-            <input name="discordChannelId" defaultValue={g.discordChannelId ?? ""} className="input w-full" />
-          </Field>
-          <Field label="Voice channel ID" hint="Optional: scheduled events point here">
-            <input name="discordVoiceChannelId" defaultValue={g.discordVoiceChannelId ?? ""} className="input w-full" />
-          </Field>
-        </div>
+          <div className="label">Discord</div>
+          <div className="grid gap-4 sm:grid-cols-3">
+            <Field label="Server ID" hint="Auto-filled the first time someone uses the bot">
+              <input name="discordGuildId" defaultValue={g.discordGuildId ?? ""} className="input w-full" placeholder="e.g. 1234567890" />
+            </Field>
+            <Field label="Announcement channel ID">
+              <input name="discordChannelId" defaultValue={g.discordChannelId ?? ""} className="input w-full" />
+            </Field>
+            <Field label="Voice channel ID" hint="Optional: scheduled events point here">
+              <input name="discordVoiceChannelId" defaultValue={g.discordVoiceChannelId ?? ""} className="input w-full" />
+            </Field>
+          </div>
 
-        <button className="btn btn-primary">Save settings</button>
-      </form>
+          <button className="btn btn-primary">Save settings</button>
+        </form>
+        <GamesCard
+          games={[...ctx.games]
+            .sort((a, b) => a.addedAt - b.addedAt)
+            .map((x) => ({ id: x.id, name: x.name, partySize: x.partySize, matchMinutes: x.matchMinutes, players: x.players.length }))}
+        />
+      </div>
 
       <aside className="space-y-4">
         <div className="card space-y-2">

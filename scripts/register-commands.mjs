@@ -11,9 +11,11 @@ if (!appId || !token) {
 }
 
 const STRING = 3;
+// Suggestions come from the group's games as you type (the bot answers Discord's autocomplete requests).
+const game = (description) => ({ type: STRING, name: "game", description, required: false, autocomplete: true, max_length: 100 });
 const commands = [
-  { name: "windows", description: "Best times this week for a full party" },
-  { name: "lfg", description: "Open a lobby: who's in right now?" },
+  { name: "windows", description: "Best times this week to play together", options: [game("Just this game (default: the ones you play)")] },
+  { name: "lfg", description: "Open a lobby: who's in right now?", options: [game("Which game (asks if you play several)")] },
   {
     name: "dinner",
     description: "Step away for dinner",

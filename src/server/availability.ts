@@ -1,10 +1,21 @@
 import { and, eq, like } from "drizzle-orm";
 import { DateTime } from "luxon";
 import { getDb } from "@/db";
-import { dayPatterns, hybridDays, memberProfiles, memberships, user, vacations, wfhDays, groups } from "@/db/schema";
+import {
+  dayPatterns,
+  games,
+  groups,
+  hybridDays,
+  memberProfiles,
+  memberships,
+  user,
+  vacations,
+  wfhDays,
+} from "@/db/schema";
 import { normalizePattern, pattern } from "@/engine";
 import type { HybridMode } from "@/engine/types";
 import { isValidZone } from "@/lib/format";
+import { defaultGameRows } from "@/lib/games";
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const TIME_RE = /^([01]\d|2[0-3]):[03]0$/;
@@ -151,7 +162,11 @@ export async function createMember(input: {
 
   let [group] = await db.select({ id: groups.id }).from(groups).limit(1);
   const isFirst = !group;
-  if (!group) [group] = await db.insert(groups).values({ name: "Valorant Squad" }).returning({ id: groups.id });
+  if (!group) {
+    [group] = await db.insert(groups).values({ name: "Valorant Squad" }).returning({ id: groups.id });
+    await db.insert(games).values(defaultGameRows(group.id));
+  }
+  // No games picked yet: they choose theirs on My availability (the Windows page asks them to).
   await db.insert(memberships).values({ groupId: group.id, userId: id, role: isFirst ? "owner" : "member" });
 
   await saveWeekPatterns(

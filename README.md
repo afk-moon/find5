@@ -1,17 +1,21 @@
 # Receptionist
 
-Find times when a full Valorant party (5 people, or any size you set) can play across US time zones. It
-plans around dinner and helps hybrid workers line up their work-from-home days. It's a web app plus an
-optional Discord bot.
+Find times when a full party can play across US time zones, for each game your group plays (Valorant,
+League of Legends, TFT and Aion 2 to start; add your own). It plans around dinner and helps hybrid workers
+line up their work-from-home days. It's a web app plus an optional Discord bot.
 
-- **Windows:** the best times this week when the same 5 people are free, shown in your own time zone.
+- **Games:** everyone ticks the games they play under **My availability → My games**, and can add a game
+  that's missing. Windows, lobbies and pings for a game only include the people who play it. Each game
+  has its own party size (5 for Valorant, a duo for TFT…), editable in **Settings → Games**.
+- **Windows:** each game's best times this week when the same people are free, shown in your own time zone.
 - **Dinner-aware:** a 🍔 quick dinner pauses the party; a 🍝 long dinner splits the session.
 - **WFH sync:** hybrid members vote on a shared work-from-home day that unlocks the most play time.
 - **Vacation:** in **My availability**, pick the first and last day you're away. You show as busy on every
   day in between, whatever your usual week or one-off days say, and the Live page shows who's on vacation.
-- **Live lobby:** “who's on right now?” with I'm in / in 15 min / dinner / back. A lobby closes at 4am
-  (group time) or after 12 hours, and its Discord post switches to “Lobby closed” without buttons, so an old
-  post never looks open. Posting `/lfg` again while a lobby is open moves it to the new post.
+- **Live lobby:** “who's on right now?” with I'm in / in 15 min / dinner / back, one lobby per game. A lobby
+  closes at 4am (group time) or after 12 hours, and its Discord post switches to “lobby closed” without
+  buttons, so an old post never looks open. Posting `/lfg` again while a lobby is open moves it to the new
+  post.
 - **Late reports:** once a locked-in session starts, teammates can report who was late. Anyone late in
   more than half of their last 10 sessions gets a ⏰ **Frequently late** tag next to their name.
 - **Discord:** login, slash commands, lobby buttons, announcements, and Scheduled Events.
@@ -113,6 +117,8 @@ with demo data. Stop the server with **Ctrl+C**.
 Things to try:
 
 - Switch between friends to see times in different zones.
+- Switch games with the tabs on the Windows page. Everyone plays Valorant, Maya and Rosa are a TFT duo,
+  four play Aion 2, and League is one player short. Tick your own games under **My availability**.
 - Paint your week on **My availability**.
 - Lock in a window.
 - Open a **Live** lobby.
@@ -182,26 +188,36 @@ Times are stored as local time plus a named time zone (`America/Chicago`, never 
 day by day. Daylight saving changes and Arizona (which skips DST) are handled. One-off days (“busy this
 Friday”) override the typical week.
 
-**Matching.** The app scans 30-minute slots for windows where the *same* 5 people are around the whole
-time. Five people free in every slot isn't enough if they're different people. Extra people show up as
-subs. Windows are ranked by play time, then fewer pauses, more subs, and fewer “if needed” players.
+**Matching.** Each game is matched separately, among the members who play it. The app scans 30-minute
+slots for windows where the *same* people (as many as the game's party size, e.g. 5 for Valorant) are
+around the whole time. Five people free in every slot isn't enough if they're different people. Extra
+people show up as subs. Windows are ranked by play time, then fewer pauses, more subs, and fewer “if
+needed” players. A game with fewer players than its party size says so instead of showing windows.
+
+**Games.** New groups start with Valorant (5), League of Legends (5), TFT (duo) and Aion 2 (4). Anyone can
+add a game under **My availability → My games** (they're signed up for it), and **Settings → Games**
+changes a game's name, party size and match length, or removes it (past sessions stay). People who joined
+before games existed play Valorant; new members pick their own.
 
 **Dinner.**
 - **Quick dinner** (up to 30 min, configurable): the party pauses and continues. Back-to-back dinners
   that add up past the limit count as long. A free sub covers a quick dinner, so there's no pause.
 - **Long dinner**: the session splits into before and after.
-- Session plans include a “⏰ last comp queue” time: dinner time minus a ~40 min match.
+- Session plans include a “⏰ last queue” time: dinner time minus one match of that game (about 40 min
+  for Valorant; set per game).
 
 **Hybrid WFH sync.**
 - Hybrid members mark each weekday as Office, Flexible, or Always WFH. They also paint what each WFH
   weekday looks like (usually an earlier start; a WFH Monday can differ from a WFH Friday) and can say
   how late they can stay up the night before a WFH day.
 - Each week they vote on flexible days. The day the most hybrid members can share wins. Ties go to the
-  day that unlocks the most extra 5-stack time.
+  day that unlocks the most extra play time in the game most of the group plays. Hybrid members who
+  don't play that game still vote.
 - Winning days become WFH dates, and everyone's windows recalculate.
 
-**Live lobby.** `/lfg` in Discord, or the **Live** page, opens a lobby. It pings whoever is free right
-now, tracks quick and long dinners with “back in…” countdowns, and pings the party when it's full.
+**Live lobby.** `/lfg` in Discord, or the **Live** page, opens a lobby for a game. It pings whoever plays
+that game and is free right now, tracks quick and long dinners with “back in…” countdowns, and pings the
+party when it's full. Each game has its own lobby, so a Valorant lobby and a TFT lobby can be open at once.
 
 **Late reports.** These work on locked-in sessions, from the Windows page or the buttons on the
 session's Discord post.
@@ -253,17 +269,19 @@ using Node built-ins only, so there's nothing extra to install.
 
 Commands:
 
-- `/windows`: best times this week
-- `/lfg`: open a lobby
-- `/dinner quick|long`
+- `/windows`: best times this week for the games you play. `/windows game: TFT` shows just one game
+  (start typing and pick it from the list).
+- `/lfg`: open a lobby. If you play several games it asks which one (blue buttons already have a lobby
+  open); `/lfg game: Valorant` skips the question.
+- `/dinner quick|long`: for the lobby you're in
 - `/back 930` (or `9pm`, `21:30`, `noon`): you're away until then. Your availability for today changes to
   busy until then and free from then, so windows and pings use it right away. The time is read in your
   profile's time zone, and a bare `930` means whichever 9:30 comes next. You're free until the end of what
   you'd already planned that evening, or until midnight (at least 2 hours) if you hadn't planned anything.
-  If a lobby is open, it shows when you'll be back. It's saved as a one-off day, so you can see or undo it
-  under **My availability → Specific days**. Discord shows it as `/back at: 930`; just type `/back`, then
-  the time.
-- `/back now`: back from dinner (puts you in the open lobby), or free from now if your schedule said busy
+  The lobby you're in (or the one open lobby for a game you play) shows when you'll be back. It's saved as
+  a one-off day, so you can see or undo it under **My availability → Specific days**. Discord shows it as
+  `/back at: 930`; just type `/back`, then the time.
+- `/back now`: back from dinner (puts you back in your lobby), or free from now if your schedule said busy
 - `/wfh [this|next]`: post the WFH vote
 
 After changing commands (for example, after updating the app), run `npm run discord:register` again, from

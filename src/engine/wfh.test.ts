@@ -101,4 +101,15 @@ describe("WFH planning", () => {
       { memberId: "kai", date: "2026-10-22" },
     ]);
   });
+
+  it("lets hybrid members who don't play the game vote, but only counts the players' time", () => {
+    // Maya doesn't play this 4-player game: she still votes and works from home, but her later
+    // Wednesday night no longer adds play time (it was +30 of Thursday's +90 above).
+    const game = { ...week, settings: settings({ partySize: 4 }), players: new Set(["dev", "rosa", "kai", "sam"]) };
+    const day = Object.fromEntries(planWfhWeek(game).options.map((o) => [o.weekday, o]));
+    expect(day[4]).toMatchObject({ approvers: ["maya", "kai"], together: 2, gainMinutes: 60 });
+    expect(day[5]).toMatchObject({ approvers: ["maya"], gainMinutes: 0 }); // only Maya would switch
+    const result = decideWfhVote({ ...game, ballots: { maya: [4], kai: [4] } });
+    expect(result.assignments.map((a) => a.memberId)).toEqual(["maya", "kai"]);
+  });
 });
