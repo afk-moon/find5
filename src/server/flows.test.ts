@@ -20,7 +20,6 @@ const {
   endSession,
   activeLive,
   lobbyCutoff,
-  readyGames,
   gamesInLobby,
   progressText,
 } = await import("./sessions");
@@ -28,7 +27,6 @@ const { getWfhState, toggleBallotDay, closeVote, reopenVote, weekStartOf } = awa
 const { saveProfile, saveDateOverride, createMember, saveWfhWeek, addVacation, removeVacation } = await import("./availability");
 const { openLateVotes, toggleLateReport, getLateTally } = await import("./lateness");
 const { setAwayUntil, resolveBackTime } = await import("./away");
-const { gameReadyMessage } = await import("@/discord/messages");
 const { freeNowNotInLobby } = await import("./notify");
 const {
   lobbyMessage,
@@ -361,7 +359,7 @@ describe("/back with a time", () => {
       .returning();
     try {
       const away = await setAwayUntil(ctx, "demo-rosa", "10:30pm", at("2031-03-04T19:00"));
-      expect(away.lobby).toEqual({ sessionId: lobby.id, before: [] });
+      expect(away.lobby).toEqual({ sessionId: lobby.id });
       let s = (await getSession(ctx.group.id, lobby.id))!;
       const summary = summarizeLive(ctx.games, s.players);
       expect(summary.soon).toEqual([{ id: "demo-rosa", backAt: at("2031-03-04T22:30") }]);
@@ -684,23 +682,18 @@ describe("games", () => {
       let s = (await getSession(ctx.group.id, sessionId))!;
       const two = summarizeLive(ctx.games, s.players);
       // Maya and Rosa make a TFT duo; Valorant still needs three more.
-      expect(readyGames(two)).toEqual([byName("TFT").id]);
+      expect(two.games.filter((g) => g.ready).map((g) => g.game.name)).toEqual(["TFT"]);
       expect(gamesInLobby(two).map(progressText)).toEqual(["✅ TFT 2/2", "Valorant 2/5", "Aion 2 1/4", "League of Legends 1/5"]);
       const msg = lobbyMessage(ctx, s.session, two, []);
       expect(msg.content).toContain("✅ **Ready to play:** TFT. Queue up!");
       expect(msg.content).toContain("🎯 ✅ TFT 2/2 · Valorant 2/5 · Aion 2 1/4 · League of Legends 1/5");
       assertDiscordLimits(msg);
 
-      // Everyone joins: Valorant and Aion 2 fill up, and only they get a "ready" ping (TFT already had one).
+      // Everyone joins: the post lists every game with a full party, readiest first.
       for (const id of ["demo-dev", "demo-kai", "demo-sam"]) await setPlayerStatus(ctx, sessionId, id, "in");
       s = (await getSession(ctx.group.id, sessionId))!;
       const all = summarizeLive(ctx.games, s.players);
-      const newly = readyGames(all).filter((id) => !readyGames(two).includes(id));
-      expect(newly).toEqual([byName("Valorant").id, byName("Aion 2").id]);
-      const ping = gameReadyMessage(ctx, all, newly).content;
-      expect(ping).toContain("✅ **Valorant** is ready (5-stack): ");
-      expect(ping).toContain("✅ **Aion 2** is ready (4-stack): ");
-      expect(ping).not.toContain("TFT");
+      expect(lobbyMessage(ctx, s.session, all, []).content).toContain("✅ **Ready to play:** Valorant, Aion 2, TFT. Queue up!");
 
       // A quick dinner pauses the games that need that person.
       await goToDinner(ctx, sessionId, "demo-rosa", "quick");
@@ -709,6 +702,21 @@ describe("games", () => {
       expect(dinner.state).toBe("paused");
       expect(gamesInLobby(dinner).map(progressText)).toContain("Valorant 4/5 (+1 at dinner)");
       expect(lobbyMessage(ctx, s.session, dinner, []).content).toContain("⏸️ **Paused,** waiting on dinner.");
+    } finally {
+      await endSession(ctx, sessionId);
+    }
+  });
+
+  it("doesn't ping anyone when a game fills: the lobby post just updates", async () => {
+    const { sessionId } = await startLive(ctx, "demo-dev");
+    try {
+      for (const id of ["demo-rosa", "demo-sam"]) await setPlayerStatus(ctx, sessionId, id, "in");
+      const tasks: Array<() => Promise<unknown>> = [];
+      // Kai taps I'm in, which fills Aion 2 (a 4-stack).
+      const res = await handleInteraction({ ...base, type: 3, data: { custom_id: `lfg:in:${sessionId}` } }, (t) => tasks.push(t));
+      expect(res.type).toBe(7); // edits the post in place
+      expect(res.data!.content).toContain("✅ **Ready to play:** Aion 2. Queue up!");
+      expect(tasks).toHaveLength(0); // no follow-up message
     } finally {
       await endSession(ctx, sessionId);
     }

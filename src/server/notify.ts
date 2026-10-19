@@ -2,7 +2,6 @@ import { eq } from "drizzle-orm";
 import { getDb } from "@/db";
 import { playSessions, wfhVotes } from "@/db/schema";
 import {
-  gameReadyMessage,
   lobbyMessage,
   lobbyMovedMessage,
   partyLabel,
@@ -15,7 +14,7 @@ import { appUrl, botConfigured, createScheduledEvent, editMessage, postMessage }
 import { lateVotingClosesAt, type PlayWindow } from "@/engine";
 import type { GameContext, GroupContext } from "./context";
 import { getLateTally } from "./lateness";
-import { closeExpiredLobbies, getSession, readyGames, summarizeLive, type PlaySession } from "./sessions";
+import { closeExpiredLobbies, getSession, summarizeLive, type PlaySession } from "./sessions";
 import { getWfhState } from "./wfh";
 import { membersNow } from "./windows";
 
@@ -92,10 +91,10 @@ export async function finishLateChecks(ctx: GroupContext, nowMs = Date.now()) {
 }
 
 /**
- * Create or refresh the lobby message. `readyBefore` is the games that had a full party before the change
- * (see readyGames): games that just got one ping their players.
+ * Create or refresh the lobby message. There's no separate "ready" ping: whoever tapped I'm in is usually in
+ * voice already, and the post itself shows which games are ready.
  */
-export function syncLobby(ctx: GroupContext, sessionId: string, readyBefore?: readonly string[]) {
+export function syncLobby(ctx: GroupContext, sessionId: string) {
   return safely("lobby", async () => {
     const s = await getSession(ctx.group.id, sessionId);
     if (!s) return;
@@ -112,11 +111,6 @@ export function syncLobby(ctx: GroupContext, sessionId: string, readyBefore?: re
         .update(playSessions)
         .set({ discordMessageId: `${ctx.group.discordChannelId}:${posted.id}` })
         .where(eq(playSessions.id, sessionId));
-    }
-    const channelId = ref?.channelId ?? ctx.group.discordChannelId;
-    const newlyReady = readyBefore ? readyGames(summary).filter((id) => !readyBefore.includes(id)) : [];
-    if (channelId && s.session.status === "active" && newlyReady.length) {
-      await postMessage(channelId, gameReadyMessage(ctx, summary, newlyReady));
     }
   });
 }

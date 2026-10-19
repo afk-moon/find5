@@ -218,8 +218,8 @@ before games existed play Valorant; new members pick their own.
 
 **Live lobby.** `/lfg` in Discord, or the **Live** page, opens the lobby. There's one at a time, for every
 game: it pings whoever is free right now, and as people join it shows each game's progress among them
-(TFT 2/2, Valorant 3/5…). When a game gets a full party, its players get a “ready” ping. It also tracks
-quick and long dinners with “back in…” countdowns; a quick dinner pauses the games that person is needed for.
+(✅ TFT 2/2, Valorant 3/5…), so you can see what's ready to play. It also tracks quick and long dinners with
+“back in…” countdowns; a quick dinner pauses the games that person is needed for.
 
 **Late reports.** These work on locked-in sessions, from the Windows page or the buttons on the
 session's Discord post.

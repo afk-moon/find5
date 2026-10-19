@@ -14,7 +14,6 @@ import {
   getSession,
   goToDinner,
   lobbyExpired,
-  readyGames,
   setPlayerStatus,
   startLive,
   summarizeLive,
@@ -23,7 +22,6 @@ import { clearBallot, ensureVote, getWfhState, toggleBallotDay, weekStartOf } fr
 import { upcomingWindows } from "@/server/windows";
 import {
   awayMessage,
-  gameReadyMessage,
   lobbyMessage,
   storedPlannedMessage,
   windowsMessage,
@@ -188,7 +186,7 @@ async function onCommand(i: Interaction, ctx: GroupContext, me: MemberView, defe
       if (time) {
         const away = await setAwayUntil(ctx, me.id, time);
         const lobby = away.lobby;
-        if (lobby) defer(() => syncLobby(ctx, lobby.sessionId, lobby.before));
+        if (lobby) defer(() => syncLobby(ctx, lobby.sessionId));
         return ephemeral(awayMessage(away, me.timezone, appUrl()));
       }
       // The time is required on /back now, so a /back without one comes from Discord's old copy of the
@@ -198,11 +196,10 @@ async function onCommand(i: Interaction, ctx: GroupContext, me: MemberView, defe
         "the app). If the time box still doesn't appear, run `npm run discord:register` again.";
       const live = await activeLive(ctx.group);
       if (!live) return ephemeral(i.data?.name === "back" ? `⚠️ ${stale}` : "No lobby is open. Start one with /lfg.");
-      const before = readyGames(summarizeLive(ctx.games, live.players));
       const kind = option("kind") === "long" ? "long" : "quick";
       if (i.data?.name === "dinner") await goToDinner(ctx, live.session.id, me.id, kind);
       else await setPlayerStatus(ctx, live.session.id, me.id, "in");
-      defer(() => syncLobby(ctx, live.session.id, before));
+      defer(() => syncLobby(ctx, live.session.id));
       if (i.data?.name === "back") return ephemeral(`Welcome back! 🎮\n-# Meant to give a time? ${stale}`);
       return ephemeral(
         kind === "quick"
@@ -241,7 +238,6 @@ async function onButton(i: Interaction, ctx: GroupContext, me: MemberView, defer
       whisper("That lobby is closed. Start a new one with /lfg.");
       return update(lobbyMessage(ctx, s.session, summarizeLive(ctx.games, s.players), []));
     }
-    const before = readyGames(summarizeLive(ctx.games, s.players));
     switch (action) {
       case "in":
       case "back":
@@ -263,11 +259,6 @@ async function onButton(i: Interaction, ctx: GroupContext, me: MemberView, defer
     }
     const fresh = (await getSession(ctx.group.id, sessionId))!;
     const summary = summarizeLive(ctx.games, fresh.players);
-    // A game that just got a full party pings its players.
-    const newlyReady = readyGames(summary).filter((id) => !before.includes(id));
-    if (newlyReady.length) {
-      defer(() => postFollowup(i.application_id, i.token, gameReadyMessage(ctx, summary, newlyReady)));
-    }
     if (!fresh.session.discordMessageId && i.message) {
       const ref = `${i.message.channel_id}:${i.message.id}`;
       defer(() => getDb().then((db) => db.update(playSessions).set({ discordMessageId: ref }).where(eq(playSessions.id, sessionId))));

@@ -232,19 +232,6 @@ export function lobbyMovedMessage(newRef: string, guildId?: string): DiscordMess
   return { content: `↪️ This lobby moved to a newer post${where}`, components: [], allowed_mentions: { parse: [] } };
 }
 
-/** Ping the people in the lobby who play the games that just got a full party. */
-export function gameReadyMessage(ctx: GroupContext, summary: LiveSummary, gameIds: readonly string[]): DiscordMessage {
-  const ready = summary.games.filter((g) => gameIds.includes(g.game.id));
-  const who = [...new Set(ready.flatMap((g) => g.playing))];
-  return {
-    content: [
-      ...ready.map((g) => `✅ **${g.game.name}** is ready (${partyLabel(g.game.partySize)}): ${names(ctx, g.playing)}`),
-      "Hop in voice and queue up.",
-    ].join("\n"),
-    allowed_mentions: { users: discordIdsOf(ctx, who) },
-  };
-}
-
 /** Private reply to "/back <time>". Times are shown in their profile's zone, the zone the time was read in. */
 export function awayMessage(away: AwayResult, zone: string, url: string): string {
   const z = zoneAbbr(zone, away.backMs);

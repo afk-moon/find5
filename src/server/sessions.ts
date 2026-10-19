@@ -305,9 +305,6 @@ export function summarizeLive(games: readonly GameView[], players: SessionPlayer
   };
 }
 
-/** Ids of the games that have a full party playing (to ping when one becomes ready). */
-export const readyGames = (summary: LiveSummary): string[] => summary.games.filter((g) => g.ready).map((g) => g.game.id);
-
 /** Games at least one person in the lobby plays (playing or at a quick dinner), readiest first. */
 export const gamesInLobby = (summary: LiveSummary): GameProgress[] =>
   summary.games.filter((g) => g.playing.length + g.atDinner.length > 0);

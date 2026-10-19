@@ -32,10 +32,8 @@ import {
   getSession,
   goToDinner,
   lockInWindow,
-  readyGames,
   setPlayerStatus,
   startLive,
-  summarizeLive,
 } from "@/server/sessions";
 import { clearBallot, closeVote, ensureVote, reopenVote, toggleBallotDay } from "@/server/wfh";
 
@@ -214,7 +212,6 @@ export async function liveAction(sessionId: string, action: LiveAction): Promise
   try {
     const s = await getSession(ctx.group.id, sessionId);
     if (!s || s.session.status !== "active") throw new Error("That lobby is closed.");
-    const before = readyGames(summarizeLive(ctx.games, s.players));
     switch (action) {
       case "in":
       case "back":
@@ -235,7 +232,7 @@ export async function liveAction(sessionId: string, action: LiveAction): Promise
         await endSession(ctx, sessionId);
         break;
     }
-    await syncLobby(ctx, sessionId, before);
+    await syncLobby(ctx, sessionId);
     refreshAll();
     return { ok: true };
   } catch (e) {
