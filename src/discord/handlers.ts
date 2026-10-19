@@ -5,26 +5,16 @@ import type { Weekday } from "@/engine";
 import { discordTs } from "@/lib/format";
 import { partyLabel } from "@/lib/games";
 import { setAwayUntil } from "@/server/away";
-import {
-  findGame,
-  forGame,
-  gamesOf,
-  loadGroupContext,
-  sessionGame,
-  type GameContext,
-  type GameView,
-  type GroupContext,
-  type MemberView,
-} from "@/server/context";
+import { findGame, forGame, gamesOf, loadGroupContext, type GameView, type GroupContext, type MemberView } from "@/server/context";
 import { getLateTally, toggleLateReport } from "@/server/lateness";
 import { freeNowNotInLobby, markLobbyMoved, syncLobby } from "@/server/notify";
 import {
+  activeLive,
   endSession,
   getSession,
   goToDinner,
-  lobbiesFor,
   lobbyExpired,
-  openLobbies,
+  readyGames,
   setPlayerStatus,
   startLive,
   summarizeLive,
@@ -33,13 +23,13 @@ import { clearBallot, ensureVote, getWfhState, toggleBallotDay, weekStartOf } fr
 import { upcomingWindows } from "@/server/windows";
 import {
   awayMessage,
+  gameReadyMessage,
   lobbyMessage,
-  partyFullMessage,
   storedPlannedMessage,
   windowsMessage,
   wfhVoteMessage,
 } from "./messages";
-import { appUrl, postFollowup, type ActionRow, type Button, type DiscordMessage } from "./rest";
+import { appUrl, postFollowup, type DiscordMessage } from "./rest";
 
 interface DiscordUser {
   id: string;
@@ -155,57 +145,6 @@ const unknownGame = (ctx: GroupContext, text: string) =>
       `Add one at <${appUrl()}/availability>.`,
   );
 
-/**
- * Open a game's lobby (or join its open one) and reply with the lobby post. That post is what button clicks
- * and the web app keep updated.
- */
-async function openLobby(i: Interaction, ctx: GroupContext, game: GameContext, me: MemberView, defer: Defer) {
-  const db = await getDb();
-  const { sessionId, created, closed } = await startLive(game, me.id);
-  const s = (await getSession(ctx.group.id, sessionId))!;
-  const freeNow = freeNowNotInLobby(game, s.players.map((p) => p.userId));
-  // Lobbies that expired (like last night's) were just closed: show that on their posts.
-  for (const id of closed) defer(() => syncLobby(ctx, id));
-  // If the lobby was already open, its older post becomes a pointer to this one, so only one post has buttons.
-  const previous = created ? null : s.session.discordMessageId;
-  defer(
-    rememberReply(i, async (ref) => {
-      await db.update(playSessions).set({ discordMessageId: ref }).where(eq(playSessions.id, sessionId));
-      if (previous && previous !== ref) await markLobbyMoved(previous, ref, i.guild_id);
-    }),
-  );
-  return reply(lobbyMessage(ctx, s.session, summarizeLive(game.game.partySize, s.players), freeNow));
-}
-
-/** "/lfg" without a game, from someone who plays several: a private picker (lobbies already open first). */
-async function pickGame(ctx: GroupContext, games: GameView[]): Promise<InteractionResponse> {
-  const open = await openLobbies(ctx.group);
-  const inLobby = (g: GameView) => {
-    const lobby = open.find((l) => l.session.gameId === g.id);
-    return lobby ? lobby.players.filter((p) => p.status === "in").length : null;
-  };
-  const buttons: Button[] = games.slice(0, 25).map((g) => {
-    const n = inLobby(g);
-    return {
-      type: 2,
-      style: n === null ? 2 : 1,
-      label: `${g.name}${n === null ? "" : ` · ${n} in`}`.slice(0, 80),
-      custom_id: `lfgnew:${g.id}`,
-    };
-  });
-  const rows: ActionRow[] = [];
-  for (let k = 0; k < buttons.length; k += 5) rows.push({ type: 1, components: buttons.slice(k, k + 5) });
-  return {
-    type: 4,
-    data: {
-      content: "🎮 Which game? (Blue ones already have a lobby open.)\n-# Next time: `/lfg game:` picks it straight away.",
-      components: rows,
-      flags: EPHEMERAL,
-      allowed_mentions: { parse: [] },
-    },
-  };
-}
-
 async function onCommand(i: Interaction, ctx: GroupContext, me: MemberView, defer: Defer) {
   const option = (name: string) => i.data?.options?.find((o) => o.name === name)?.value;
   const db = await getDb();
@@ -223,14 +162,22 @@ async function onCommand(i: Interaction, ctx: GroupContext, me: MemberView, defe
     }
 
     case "lfg": {
-      const text = String(option("game") ?? "").trim();
-      const picked = findGame(ctx, text);
-      if (text && !picked) return unknownGame(ctx, text);
-      if (picked) return openLobby(i, ctx, forGame(ctx, picked), me, defer);
-      const mine = gamesOf(ctx, me.id);
-      if (mine.length === 1) return openLobby(i, ctx, forGame(ctx, mine[0]), me, defer);
-      if (!ctx.games.length) return ephemeral(`No games yet. Add one at <${appUrl()}/availability>.`);
-      return pickGame(ctx, mine.length ? mine : ctx.games);
+      // One lobby for every game: whoever's in decides what to play, and the post shows which games are ready.
+      const { sessionId, created, closed } = await startLive(ctx, me.id);
+      const s = (await getSession(ctx.group.id, sessionId))!;
+      const freeNow = freeNowNotInLobby(ctx, s.players.map((p) => p.userId));
+      // Lobbies that expired (like last night's) were just closed: show that on their posts.
+      for (const id of closed) defer(() => syncLobby(ctx, id));
+      // This reply becomes the lobby message that button clicks and the web app keep updated. If the lobby was
+      // already open, its older post becomes a pointer to this one, so only one post has buttons.
+      const previous = created ? null : s.session.discordMessageId;
+      defer(
+        rememberReply(i, async (ref) => {
+          await db.update(playSessions).set({ discordMessageId: ref }).where(eq(playSessions.id, sessionId));
+          if (previous && previous !== ref) await markLobbyMoved(previous, ref, i.guild_id);
+        }),
+      );
+      return reply(lobbyMessage(ctx, s.session, summarizeLive(ctx.games, s.players), freeNow));
     }
 
     case "dinner":
@@ -240,7 +187,8 @@ async function onCommand(i: Interaction, ctx: GroupContext, me: MemberView, defe
       const time = i.data?.name === "back" ? String(option("at") ?? option("time") ?? "").trim() : "";
       if (time) {
         const away = await setAwayUntil(ctx, me.id, time);
-        for (const lobby of away.lobbies) defer(() => syncLobby(ctx, lobby.sessionId, lobby.before));
+        const lobby = away.lobby;
+        if (lobby) defer(() => syncLobby(ctx, lobby.sessionId, lobby.before));
         return ephemeral(awayMessage(away, me.timezone, appUrl()));
       }
       // The time is required on /back now, so a /back without one comes from Discord's old copy of the
@@ -248,17 +196,13 @@ async function onCommand(i: Interaction, ctx: GroupContext, me: MemberView, defe
       const stale =
         "Discord's copy of /back is out of date, so it didn't send a time. Reload Discord (Ctrl+R, or restart " +
         "the app). If the time box still doesn't appear, run `npm run discord:register` again.";
-      const lobbies = await lobbiesFor(ctx, me.id);
-      if (!lobbies.length) {
-        return ephemeral(i.data?.name === "back" ? `⚠️ ${stale}` : "You're not in an open lobby. Start one with /lfg.");
-      }
+      const live = await activeLive(ctx.group);
+      if (!live) return ephemeral(i.data?.name === "back" ? `⚠️ ${stale}` : "No lobby is open. Start one with /lfg.");
+      const before = readyGames(summarizeLive(ctx.games, live.players));
       const kind = option("kind") === "long" ? "long" : "quick";
-      for (const live of lobbies) {
-        const before = summarizeLive(sessionGame(ctx, live.session).game.partySize, live.players).state;
-        if (i.data?.name === "dinner") await goToDinner(ctx, live.session.id, me.id, kind);
-        else await setPlayerStatus(ctx, live.session.id, me.id, "in");
-        defer(() => syncLobby(ctx, live.session.id, before));
-      }
+      if (i.data?.name === "dinner") await goToDinner(ctx, live.session.id, me.id, kind);
+      else await setPlayerStatus(ctx, live.session.id, me.id, "in");
+      defer(() => syncLobby(ctx, live.session.id, before));
       if (i.data?.name === "back") return ephemeral(`Welcome back! 🎮\n-# Meant to give a time? ${stale}`);
       return ephemeral(
         kind === "quick"
@@ -283,20 +227,11 @@ async function onButton(i: Interaction, ctx: GroupContext, me: MemberView, defer
   const whisper = (content: string) =>
     defer(() => postFollowup(i.application_id, i.token, { content, flags: EPHEMERAL, allowed_mentions: { parse: [] } }));
 
-  // A game picked from the "/lfg" picker: the reply is a new, public lobby post.
-  if (kind === "lfgnew") {
-    const game = ctx.gameById.get(a);
-    if (!game) return ephemeral("That game isn't on the list anymore. Try /lfg again.");
-    return openLobby(i, ctx, forGame(ctx, game), me, defer);
-  }
-
   if (kind === "lfg") {
     const action = a;
     const sessionId = b;
     let s = await getSession(ctx.group.id, sessionId);
     if (!s) return ephemeral("That lobby is gone. Start a new one with /lfg.");
-    const game = sessionGame(ctx, s.session);
-    const P = game.game.partySize;
     // An old lobby (like last night's) closes when someone taps it, and its post loses the buttons.
     if (s.session.status === "active" && lobbyExpired(s.session, Date.now(), ctx.group.homeTimezone)) {
       await endSession(ctx, sessionId);
@@ -304,9 +239,9 @@ async function onButton(i: Interaction, ctx: GroupContext, me: MemberView, defer
     }
     if (s.session.status !== "active") {
       whisper("That lobby is closed. Start a new one with /lfg.");
-      return update(lobbyMessage(ctx, s.session, summarizeLive(P, s.players), []));
+      return update(lobbyMessage(ctx, s.session, summarizeLive(ctx.games, s.players), []));
     }
-    const before = summarizeLive(P, s.players).state;
+    const before = readyGames(summarizeLive(ctx.games, s.players));
     switch (action) {
       case "in":
       case "back":
@@ -327,16 +262,18 @@ async function onButton(i: Interaction, ctx: GroupContext, me: MemberView, defer
         return ephemeral("Unknown button.");
     }
     const fresh = (await getSession(ctx.group.id, sessionId))!;
-    const summary = summarizeLive(P, fresh.players);
-    if (before !== "full" && summary.state === "full") {
-      defer(() => postFollowup(i.application_id, i.token, partyFullMessage(game, summary)));
+    const summary = summarizeLive(ctx.games, fresh.players);
+    // A game that just got a full party pings its players.
+    const newlyReady = readyGames(summary).filter((id) => !before.includes(id));
+    if (newlyReady.length) {
+      defer(() => postFollowup(i.application_id, i.token, gameReadyMessage(ctx, summary, newlyReady)));
     }
     if (!fresh.session.discordMessageId && i.message) {
       const ref = `${i.message.channel_id}:${i.message.id}`;
       defer(() => getDb().then((db) => db.update(playSessions).set({ discordMessageId: ref }).where(eq(playSessions.id, sessionId))));
     }
-    // Keep "Free right now": whoever plays this game, is free by their schedule and still hasn't answered.
-    const freeNow = freeNowNotInLobby(game, fresh.players.map((p) => p.userId));
+    // Keep "Free right now": whoever's free by their schedule and still hasn't answered.
+    const freeNow = freeNowNotInLobby(ctx, fresh.players.map((p) => p.userId));
     return update(lobbyMessage(ctx, fresh.session, summary, freeNow));
   }
 

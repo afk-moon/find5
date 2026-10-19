@@ -2,9 +2,9 @@ import { eq } from "drizzle-orm";
 import { getDb } from "@/db";
 import { playSessions, wfhVotes } from "@/db/schema";
 import {
+  gameReadyMessage,
   lobbyMessage,
   lobbyMovedMessage,
-  partyFullMessage,
   partyLabel,
   plannedSessionMessage,
   storedPlannedMessage,
@@ -13,9 +13,9 @@ import {
 } from "@/discord/messages";
 import { appUrl, botConfigured, createScheduledEvent, editMessage, postMessage } from "@/discord/rest";
 import { lateVotingClosesAt, type PlayWindow } from "@/engine";
-import { sessionGame, type GameContext, type GroupContext } from "./context";
+import type { GameContext, GroupContext } from "./context";
 import { getLateTally } from "./lateness";
-import { closeExpiredLobbies, getSession, summarizeLive, type LiveSummary, type PlaySession } from "./sessions";
+import { closeExpiredLobbies, getSession, readyGames, summarizeLive, type PlaySession } from "./sessions";
 import { getWfhState } from "./wfh";
 import { membersNow } from "./windows";
 
@@ -35,8 +35,8 @@ function parseRef(ref: string | null | undefined) {
   return channelId && messageId ? { channelId, messageId } : null;
 }
 
-/** People who play this game, are free by their schedule right now, and haven't answered the lobby. */
-export function freeNowNotInLobby(ctx: GameContext, lobby: Iterable<string>): string[] {
+/** Everyone free by their schedule right now who hasn't answered the lobby (it's for every game). */
+export function freeNowNotInLobby(ctx: GroupContext, lobby: Iterable<string>): string[] {
   const inLobby = new Set(lobby);
   return membersNow(ctx)
     .filter((m) => (m.state === "F" || m.state === "M") && !inLobby.has(m.member.id))
@@ -91,15 +91,17 @@ export async function finishLateChecks(ctx: GroupContext, nowMs = Date.now()) {
   return closed.length;
 }
 
-/** Create or refresh the lobby message; ping the party when it just became full. */
-export function syncLobby(ctx: GroupContext, sessionId: string, previous?: LiveSummary["state"]) {
+/**
+ * Create or refresh the lobby message. `readyBefore` is the games that had a full party before the change
+ * (see readyGames): games that just got one ping their players.
+ */
+export function syncLobby(ctx: GroupContext, sessionId: string, readyBefore?: readonly string[]) {
   return safely("lobby", async () => {
     const s = await getSession(ctx.group.id, sessionId);
     if (!s) return;
-    const game = sessionGame(ctx, s.session);
-    const summary = summarizeLive(game.game.partySize, s.players);
+    const summary = summarizeLive(ctx.games, s.players);
     // Every render lists who's free and hasn't answered, so edits don't drop that line.
-    const message = lobbyMessage(ctx, s.session, summary, freeNowNotInLobby(game, s.players.map((p) => p.userId)));
+    const message = lobbyMessage(ctx, s.session, summary, freeNowNotInLobby(ctx, s.players.map((p) => p.userId)));
     const ref = parseRef(s.session.discordMessageId);
     if (ref) {
       await editMessage(ref.channelId, ref.messageId, message);
@@ -112,8 +114,9 @@ export function syncLobby(ctx: GroupContext, sessionId: string, previous?: LiveS
         .where(eq(playSessions.id, sessionId));
     }
     const channelId = ref?.channelId ?? ctx.group.discordChannelId;
-    if (channelId && previous && previous !== "full" && summary.state === "full") {
-      await postMessage(channelId, partyFullMessage(game, summary));
+    const newlyReady = readyBefore ? readyGames(summary).filter((id) => !readyBefore.includes(id)) : [];
+    if (channelId && s.session.status === "active" && newlyReady.length) {
+      await postMessage(channelId, gameReadyMessage(ctx, summary, newlyReady));
     }
   });
 }

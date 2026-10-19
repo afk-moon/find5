@@ -5,15 +5,16 @@ League of Legends, TFT and Aion 2 to start; add your own). It plans around dinne
 line up their work-from-home days. It's a web app plus an optional Discord bot.
 
 - **Games:** everyone ticks the games they play under **My availability → My games**, and can add a game
-  that's missing. Windows, lobbies and pings for a game only include the people who play it. Each game
+  that's missing. A game's windows and locked-in sessions only include the people who play it. Each game
   has its own party size (5 for Valorant, a duo for TFT…), editable in **Settings → Games**.
 - **Windows:** each game's best times this week when the same people are free, shown in your own time zone.
 - **Dinner-aware:** a 🍔 quick dinner pauses the party; a 🍝 long dinner splits the session.
 - **WFH sync:** hybrid members vote on a shared work-from-home day that unlocks the most play time.
 - **Vacation:** in **My availability**, pick the first and last day you're away. You show as busy on every
   day in between, whatever your usual week or one-off days say, and the Live page shows who's on vacation.
-- **Live lobby:** “who's on right now?” with I'm in / in 15 min / dinner / back, one lobby per game. A lobby
-  closes at 4am (group time) or after 12 hours, and its Discord post switches to “lobby closed” without
+- **Live lobby:** “who's on right now?” with I'm in / in 15 min / dinner / back. There's one lobby for
+  every game, and it shows which games the people in it can play (✅ TFT 2/2 · Valorant 3/5). A lobby
+  closes at 4am (group time) or after 12 hours, and its Discord post switches to “Lobby closed” without
   buttons, so an old post never looks open. Posting `/lfg` again while a lobby is open moves it to the new
   post.
 - **Late reports:** once a locked-in session starts, teammates can report who was late. Anyone late in
@@ -215,9 +216,10 @@ before games existed play Valorant; new members pick their own.
   don't play that game still vote.
 - Winning days become WFH dates, and everyone's windows recalculate.
 
-**Live lobby.** `/lfg` in Discord, or the **Live** page, opens a lobby for a game. It pings whoever plays
-that game and is free right now, tracks quick and long dinners with “back in…” countdowns, and pings the
-party when it's full. Each game has its own lobby, so a Valorant lobby and a TFT lobby can be open at once.
+**Live lobby.** `/lfg` in Discord, or the **Live** page, opens the lobby. There's one at a time, for every
+game: it pings whoever is free right now, and as people join it shows each game's progress among them
+(TFT 2/2, Valorant 3/5…). When a game gets a full party, its players get a “ready” ping. It also tracks
+quick and long dinners with “back in…” countdowns; a quick dinner pauses the games that person is needed for.
 
 **Late reports.** These work on locked-in sessions, from the Windows page or the buttons on the
 session's Discord post.
@@ -271,17 +273,17 @@ Commands:
 
 - `/windows`: best times this week for the games you play. `/windows game: TFT` shows just one game
   (start typing and pick it from the list).
-- `/lfg`: open a lobby. If you play several games it asks which one (blue buttons already have a lobby
-  open); `/lfg game: Valorant` skips the question.
-- `/dinner quick|long`: for the lobby you're in
+- `/lfg`: open the lobby (or join the open one), for any game. It pings whoever's free and shows which
+  games the people who join can play.
+- `/dinner quick|long`
 - `/back 930` (or `9pm`, `21:30`, `noon`): you're away until then. Your availability for today changes to
   busy until then and free from then, so windows and pings use it right away. The time is read in your
   profile's time zone, and a bare `930` means whichever 9:30 comes next. You're free until the end of what
   you'd already planned that evening, or until midnight (at least 2 hours) if you hadn't planned anything.
-  The lobby you're in (or the one open lobby for a game you play) shows when you'll be back. It's saved as
-  a one-off day, so you can see or undo it under **My availability → Specific days**. Discord shows it as
-  `/back at: 930`; just type `/back`, then the time.
-- `/back now`: back from dinner (puts you back in your lobby), or free from now if your schedule said busy
+  If a lobby is open, it shows when you'll be back. It's saved as a one-off day, so you can see or undo it
+  under **My availability → Specific days**. Discord shows it as `/back at: 930`; just type `/back`, then
+  the time.
+- `/back now`: back from dinner (puts you in the open lobby), or free from now if your schedule said busy
 - `/wfh [this|next]`: post the WFH vote
 
 After changing commands (for example, after updating the app), run `npm run discord:register` again, from

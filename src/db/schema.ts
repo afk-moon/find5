@@ -246,7 +246,7 @@ export const playSessions = pgTable("play_sessions", {
     .notNull()
     .references(() => groups.id, { onDelete: "cascade" }),
   kind: text("kind", { enum: ["planned", "live"] }).notNull(),
-  /** Which game it's for. Null only if that game was removed. */
+  /** The game a locked-in session is for. Null for live lobbies (they're for every game) or a removed game. */
   gameId: text("game_id").references(() => games.id, { onDelete: "set null" }),
   status: text("status", { enum: ["active", "ended", "cancelled"] }).notNull().default("active"),
   startAt: timestamp("start_at", { withTimezone: true }).notNull(),

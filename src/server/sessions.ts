@@ -3,7 +3,7 @@ import { DateTime } from "luxon";
 import { getDb } from "@/db";
 import { playSessionPlayers, playSessions, type PlayerStatus, type SessionPlan } from "@/db/schema";
 import type { PlayWindow } from "@/engine";
-import type { GameContext, GroupContext } from "./context";
+import type { GameContext, GameView, GroupContext } from "./context";
 import { findWindowByBounds } from "./windows";
 
 export type PlaySession = typeof playSessions.$inferSelect;
@@ -142,26 +142,18 @@ export function lobbyExpired(session: PlaySession, nowMs: number, zone: string):
   return session.kind === "live" && session.startAt.getTime() < lobbyCutoff(nowMs, zone);
 }
 
-const openLobbyWhere = (group: LobbyGroup, nowMs: number, gameId?: string) =>
+const openLobbyWhere = (group: LobbyGroup, nowMs: number) =>
   and(
     eq(playSessions.groupId, group.id),
     eq(playSessions.kind, "live"),
     eq(playSessions.status, "active"),
     gte(playSessions.startAt, new Date(lobbyCutoff(nowMs, group.homeTimezone))),
-    gameId ? eq(playSessions.gameId, gameId) : undefined,
   );
 
-/** The newest open lobby (for one game, if given). */
-export async function activeLive(group: LobbyGroup, nowMs = Date.now(), gameId?: string): Promise<SessionWithPlayers | null> {
-  const [live] = await findWithPlayers(() => openLobbyWhere(group, nowMs, gameId), "desc", 1);
+/** The open lobby. There's one at a time, for every game: who's on decides what gets played. */
+export async function activeLive(group: LobbyGroup, nowMs = Date.now()): Promise<SessionWithPlayers | null> {
+  const [live] = await findWithPlayers(() => openLobbyWhere(group, nowMs), "desc", 1);
   return live ?? null;
-}
-
-/** Every open lobby, newest first: one per game (each game has its own). */
-export async function openLobbies(group: LobbyGroup, nowMs = Date.now()): Promise<SessionWithPlayers[]> {
-  const all = await findWithPlayers(() => openLobbyWhere(group, nowMs), "desc", 20);
-  const seen = new Set<string | null>();
-  return all.filter((l) => !seen.has(l.session.gameId) && seen.add(l.session.gameId));
 }
 
 /** Lobbies still marked open after they expired (nobody tapped End): close them. Returns their ids. */
@@ -183,14 +175,11 @@ export async function closeExpiredLobbies(group: LobbyGroup, nowMs = Date.now())
 }
 
 /**
- * Open a lobby for a game (or join that game's open one). Expired lobbies are closed first; `closed` lists
- * them so their Discord posts can be updated.
+ * Open the lobby (or join the open one). Expired lobbies are closed first; `closed` lists them so their
+ * Discord posts can be updated.
  */
-export async function startLive(ctx: GameContext, userId: string, nowMs = Date.now()) {
-  const [closed, existing] = await Promise.all([
-    closeExpiredLobbies(ctx.group, nowMs),
-    activeLive(ctx.group, nowMs, ctx.game.id),
-  ]);
+export async function startLive(ctx: GroupContext, userId: string, nowMs = Date.now()) {
+  const [closed, existing] = await Promise.all([closeExpiredLobbies(ctx.group, nowMs), activeLive(ctx.group, nowMs)]);
   if (existing) {
     await setPlayerStatus(ctx, existing.session.id, userId, "in");
     return { sessionId: existing.session.id, created: false, closed };
@@ -198,25 +187,10 @@ export async function startLive(ctx: GameContext, userId: string, nowMs = Date.n
   const db = await getDb();
   const [session] = await db
     .insert(playSessions)
-    .values({ groupId: ctx.group.id, gameId: ctx.game.id, kind: "live", startAt: new Date(nowMs), createdBy: userId })
+    .values({ groupId: ctx.group.id, kind: "live", startAt: new Date(nowMs), createdBy: userId })
     .returning();
   await db.insert(playSessionPlayers).values({ sessionId: session.id, userId, status: "in" });
   return { sessionId: session.id, created: true, closed };
-}
-
-/**
- * The open lobbies a member's /dinner and /back apply to: the ones they've joined (left counts, so /back
- * rejoins), or else the open lobby of a game they play, if there's exactly one. Lobbies they said
- * "Not tonight" to are skipped.
- */
-export async function lobbiesFor(ctx: GroupContext, userId: string, nowMs = Date.now()): Promise<SessionWithPlayers[]> {
-  const open = await openLobbies(ctx.group, nowMs);
-  const statusIn = (l: SessionWithPlayers) => l.players.find((p) => p.userId === userId)?.status;
-  const candidates = open.filter((l) => statusIn(l) !== "declined");
-  const joined = candidates.filter((l) => statusIn(l));
-  if (joined.length) return joined;
-  const theirs = candidates.filter((l) => !!l.session.gameId && !!ctx.gameById.get(l.session.gameId)?.players.includes(userId));
-  return theirs.length === 1 ? theirs : [];
 }
 
 export async function setPlayerStatus(
@@ -262,8 +236,21 @@ export async function endSession(ctx: GroupContext, sessionId: string) {
     .where(and(eq(playSessions.id, sessionId), eq(playSessions.groupId, ctx.group.id)));
 }
 
+/** How close the people in the lobby are to a party for one game. */
+export interface GameProgress {
+  game: GameView;
+  /** Lobby members playing right now who play this game… */
+  playing: string[];
+  /** …and the ones on a quick dinner (the party waits for them). */
+  atDinner: string[];
+  /** Enough of them are playing right now. */
+  ready: boolean;
+  /** How many more people it needs (quick diners count, since the party waits for them). */
+  needed: number;
+}
+
 export interface LiveSummary {
-  /** full: enough people playing · paused: waiting on quick dinners · forming: need more people */
+  /** full: some game has a full party playing · paused: one would, after quick dinners · forming: need more people */
   state: "full" | "paused" | "forming";
   playing: string[];
   eating: Array<{ id: string; kind: "quick" | "long"; backAt: number | null }>;
@@ -271,11 +258,17 @@ export interface LiveSummary {
   soon: Array<{ id: string; backAt: number | null }>;
   declined: string[];
   left: string[];
-  /** How many more people are needed (quick diners count, since the party waits for them). */
+  /** Every game, readiest first: ready ones, then the fewest more needed, then the most people in. */
+  games: GameProgress[];
+  /** The fewest more people any game needs. */
   needed: number;
 }
 
-export function summarizeLive(partySize: number, players: SessionPlayer[]): LiveSummary {
+/**
+ * The lobby is for every game, so it's summed up game by game: who's in decides what you can play
+ * (two TFT players make a duo while Valorant still needs three more).
+ */
+export function summarizeLive(games: readonly GameView[], players: SessionPlayer[]): LiveSummary {
   const ids = (status: PlayerStatus) => players.filter((p) => p.status === status).map((p) => p.userId);
   const playing = ids("in");
   const quick = ids("quick_dinner");
@@ -290,8 +283,16 @@ export function summarizeLive(partySize: number, players: SessionPlayer[]): Live
     .filter((p) => p.status === "soon")
     .map((p) => ({ id: p.userId, backAt: p.backAt?.getTime() ?? null }))
     .sort((a, b) => (a.backAt ?? Infinity) - (b.backAt ?? Infinity));
-  const state =
-    playing.length >= partySize ? "full" : playing.length + quick.length >= partySize ? "paused" : "forming";
+  const progress: GameProgress[] = games
+    .map((game) => {
+      const plays = new Set(game.players);
+      const p = playing.filter((id) => plays.has(id));
+      const q = quick.filter((id) => plays.has(id));
+      return { game, playing: p, atDinner: q, ready: p.length >= game.partySize, needed: Math.max(0, game.partySize - p.length - q.length) };
+    })
+    // Stable, so ties keep the group's order (most players first).
+    .sort((a, b) => Number(b.ready) - Number(a.ready) || a.needed - b.needed || b.playing.length - a.playing.length);
+  const state = progress.some((g) => g.ready) ? "full" : progress.some((g) => g.needed === 0) ? "paused" : "forming";
   return {
     state,
     playing,
@@ -299,6 +300,18 @@ export function summarizeLive(partySize: number, players: SessionPlayer[]): Live
     soon,
     declined: ids("declined"),
     left: ids("left"),
-    needed: Math.max(0, partySize - playing.length - quick.length),
+    games: progress,
+    needed: progress.length ? Math.min(...progress.map((g) => g.needed)) : 0,
   };
 }
+
+/** Ids of the games that have a full party playing (to ping when one becomes ready). */
+export const readyGames = (summary: LiveSummary): string[] => summary.games.filter((g) => g.ready).map((g) => g.game.id);
+
+/** Games at least one person in the lobby plays (playing or at a quick dinner), readiest first. */
+export const gamesInLobby = (summary: LiveSummary): GameProgress[] =>
+  summary.games.filter((g) => g.playing.length + g.atDinner.length > 0);
+
+/** One game's progress in the lobby: "✅ TFT 2/2", "Valorant 3/5", "Aion 2 3/4 (+1 at dinner)". */
+export const progressText = (g: GameProgress) =>
+  `${g.ready ? "✅ " : ""}${g.game.name} ${g.playing.length}/${g.game.partySize}${g.atDinner.length ? ` (+${g.atDinner.length} at dinner)` : ""}`;

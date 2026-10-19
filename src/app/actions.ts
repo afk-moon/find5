@@ -21,7 +21,7 @@ import {
   setWfhDate,
   type ProfileInput,
 } from "@/server/availability";
-import { forGame, loadGroupContext, requireViewer, sessionGame, type GroupContext } from "@/server/context";
+import { forGame, loadGroupContext, requireViewer, type GroupContext } from "@/server/context";
 import { addGame, removeGame, setMemberGames, updateGame } from "@/server/games";
 import { toggleLateReport } from "@/server/lateness";
 import { announceLockIn, announceWfhDecision, syncLobby, syncPlannedMessage, syncWfhVote } from "@/server/notify";
@@ -32,6 +32,7 @@ import {
   getSession,
   goToDinner,
   lockInWindow,
+  readyGames,
   setPlayerStatus,
   startLive,
   summarizeLive,
@@ -194,14 +195,13 @@ export async function toggleLateReportAction(sessionId: string, lateUserId: stri
 
 // ─── Live lobby ────────────────────────────────────────────────────────────────────────────
 
-export async function startLfgAction(gameId: string): Promise<ActionResult> {
+export async function startLfgAction(): Promise<ActionResult> {
   const { ctx, userId } = await requireViewer();
   try {
-    const game = gameCtx(ctx, gameId);
-    const { sessionId, created, closed } = await startLive(game, userId);
+    const { sessionId, created, closed } = await startLive(ctx, userId);
     await Promise.all([syncLobby(ctx, sessionId), ...closed.map((id) => syncLobby(ctx, id))]);
     refreshAll();
-    return { ok: true, message: created ? `${game.game.name} lobby open` : `Joined the ${game.game.name} lobby` };
+    return { ok: true, message: created ? "Lobby open" : "Joined the lobby" };
   } catch (e) {
     return actionError(e);
   }
@@ -214,7 +214,7 @@ export async function liveAction(sessionId: string, action: LiveAction): Promise
   try {
     const s = await getSession(ctx.group.id, sessionId);
     if (!s || s.session.status !== "active") throw new Error("That lobby is closed.");
-    const before = summarizeLive(sessionGame(ctx, s.session).game.partySize, s.players).state;
+    const before = readyGames(summarizeLive(ctx.games, s.players));
     switch (action) {
       case "in":
       case "back":

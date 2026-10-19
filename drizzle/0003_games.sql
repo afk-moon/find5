@@ -22,7 +22,8 @@ ALTER TABLE "member_games" ADD CONSTRAINT "member_games_user_id_user_id_fk" FORE
 ALTER TABLE "member_games" ADD CONSTRAINT "member_games_game_id_games_id_fk" FOREIGN KEY ("game_id") REFERENCES "public"."games"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "play_sessions" ADD CONSTRAINT "play_sessions_game_id_games_id_fk" FOREIGN KEY ("game_id") REFERENCES "public"."games"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 -- Data: every existing group gets the starter games. Valorant keeps the group's old party size and match
--- length, everyone already in a group plays it (it was the only game), and existing sessions were Valorant.
+-- length, everyone already in a group plays it (it was the only game), and existing locked-in sessions were
+-- Valorant. (Live lobbies stay without a game: they are for every game.)
 -- They are added a second apart so they list in this order (like new groups, see src/lib/games.ts).
 INSERT INTO "games" ("id", "group_id", "name", "party_size", "match_minutes", "created_at")
 SELECT 'valorant-' || "id", "id", 'Valorant', "party_size", "match_length_minutes", now() + interval '0 seconds' FROM "groups";--> statement-breakpoint
@@ -34,4 +35,4 @@ INSERT INTO "games" ("id", "group_id", "name", "party_size", "match_minutes", "c
 SELECT 'aion2-' || "id", "id", 'Aion 2', 4, 30, now() + interval '3 seconds' FROM "groups";--> statement-breakpoint
 INSERT INTO "member_games" ("user_id", "game_id")
 SELECT "user_id", 'valorant-' || "group_id" FROM "memberships";--> statement-breakpoint
-UPDATE "play_sessions" SET "game_id" = 'valorant-' || "group_id";
+UPDATE "play_sessions" SET "game_id" = 'valorant-' || "group_id" WHERE "kind" = 'planned';

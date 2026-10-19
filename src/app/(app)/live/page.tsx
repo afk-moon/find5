@@ -1,4 +1,3 @@
-import Link from "next/link";
 import { liveAction, startLfgAction, type LiveAction } from "@/app/actions";
 import { ActionButton } from "@/components/ActionButton";
 import { Avatar } from "@/components/Avatar";
@@ -6,148 +5,127 @@ import { AutoRefresh } from "@/components/client";
 import { MemberName } from "@/components/LateTag";
 import { currentGamingDay, vacationOn } from "@/engine";
 import { fmtDate, fmtRelative, fmtTime, zoneAbbr } from "@/lib/format";
-import {
-  gamesOf,
-  requestTime,
-  requireMember,
-  requireViewer,
-  sessionGame,
-  type GameContext,
-  type MemberView,
-} from "@/server/context";
-import { openLobbies, summarizeLive, type SessionWithPlayers } from "@/server/sessions";
+import { mainGame, requestTime, requireMember, requireViewer, type GroupContext, type MemberView } from "@/server/context";
+import { activeLive, gamesInLobby, progressText, summarizeLive, type SessionWithPlayers } from "@/server/sessions";
 import { membersNow, type MemberNow } from "@/server/windows";
 
 export default async function LivePage() {
   const { groupId, homeTimezone } = await requireMember();
   const now = requestTime();
-  const [{ me, ctx }, lobbies] = await Promise.all([requireViewer(), openLobbies({ id: groupId, homeTimezone }, now)]);
+  const [{ me, ctx }, live] = await Promise.all([requireViewer(), activeLive({ id: groupId, homeTimezone }, now)]);
   const zone = me.timezone;
   const status = membersNow(ctx, now);
   const statusOf = new Map(status.map((s) => [s.member.id, s]));
-  const isFree = (id: string) => {
-    const s = statusOf.get(id);
-    return !!s && (s.state === "F" || s.state === "M");
-  };
-  const mine = gamesOf(ctx, me.id);
-  const hasLobby = new Set(lobbies.map((l) => l.session.gameId));
-  // Their games that don't have a lobby open yet, most free right now first.
-  const startable = mine
-    .filter((g) => !hasLobby.has(g.id))
-    .map((g) => ({ g, free: g.players.filter(isFree).length }))
-    .sort((a, b) => b.free - a.free);
 
-  return (
-    <div className="mx-auto max-w-3xl space-y-5">
-      <AutoRefresh seconds={lobbies.length ? 10 : 30} />
-      <div>
-        <h1 className="h1">Live lobby</h1>
-        <p className="mt-1 text-sm text-muted">
-          Spontaneous game? Open a lobby for it. Whoever plays it and is free gets pinged (in Discord, if it&apos;s
-          connected), and it fills up to that game&apos;s party size.
-        </p>
-      </div>
-
-      {lobbies.map((live) => (
-        <LobbyCard key={live.session.id} live={live} game={sessionGame(ctx, live.session)} me={me} zone={zone} now={now} statusOf={statusOf} />
-      ))}
-
-      {mine.length === 0 ? (
-        <div className="card text-sm">
-          🎮 Pick the games you play on{" "}
-          <Link className="text-val underline" href="/availability">
-            My availability
-          </Link>{" "}
-          to open lobbies for them.
+  if (!live) {
+    const free = new Set(status.filter((s) => s.state === "F" || s.state === "M").map((s) => s.member.id));
+    // Games enough people are free for right now.
+    const enough = ctx.games.filter((g) => g.players.filter((id) => free.has(id)).length >= g.partySize).map((g) => g.name);
+    return (
+      <div className="mx-auto max-w-3xl space-y-5">
+        <AutoRefresh seconds={30} />
+        <div>
+          <h1 className="h1">Live lobby</h1>
+          <p className="mt-1 text-sm text-muted">
+            Spontaneous game? Open a lobby, for any game. Whoever&apos;s free gets pinged (in Discord, if it&apos;s
+            connected), and the lobby shows which games the people who join can play.
+          </p>
         </div>
-      ) : (
-        startable.length > 0 && (
-          <div className="card space-y-3">
-            <div className="label">{lobbies.length ? "Start another lobby" : "No lobby open"}</div>
-            {startable.map(({ g, free }) => (
-              <div key={g.id} className="flex flex-wrap items-center justify-between gap-3">
-                <div>
-                  <div className="font-semibold">{g.name}</div>
-                  <div className="text-sm text-muted">
-                    {free} of {g.players.length} free right now
-                    {free >= g.partySize ? ": enough for a full party 🎉" : ` · needs ${g.partySize}`}
-                  </div>
-                </div>
-                <ActionButton className="btn btn-primary" action={startLfgAction.bind(null, g.id)} pendingLabel="Opening…">
-                  Start LFG
-                </ActionButton>
-              </div>
-            ))}
+        <div className="card flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <div className="font-semibold">No lobby open</div>
+            <div className="text-sm text-muted">
+              {free.size} of {ctx.members.length} free right now{enough.length ? `: enough for ${enough.join(", ")} 🎉` : ""}
+            </div>
           </div>
-        )
-      )}
-
-      {lobbies.length === 0 && (
+          <ActionButton className="btn btn-primary" action={startLfgAction} pendingLabel="Opening…">
+            Start LFG
+          </ActionButton>
+        </div>
         <div className="card space-y-2">
           <div className="label">Everyone right now</div>
           {status.map((s) => (
             <StatusRow key={s.member.id} s={s} zone={zone} now={now} />
           ))}
         </div>
-      )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="mx-auto max-w-3xl space-y-5">
+      <AutoRefresh seconds={10} />
+      <LobbyCard live={live} ctx={ctx} me={me} zone={zone} now={now} statusOf={statusOf} />
     </div>
   );
 }
 
-/** One game's open lobby: who's in, buttons for the viewer, who hasn't answered, and dinner heads-ups. */
+/** The open lobby: who's in, which games they can play, buttons for the viewer, and dinner heads-ups. */
 function LobbyCard({
   live,
-  game,
+  ctx,
   me,
   zone,
   now,
   statusOf,
 }: {
   live: SessionWithPlayers;
-  game: GameContext;
+  ctx: GroupContext;
   me: MemberView;
   zone: string;
   now: number;
   statusOf: Map<string, MemberNow>;
 }) {
-  const ctx = game;
-  const P = game.game.partySize;
-  const summary = summarizeLive(P, live.players);
+  const summary = summarizeLive(ctx.games, live.players);
+  const games = gamesInLobby(summary);
+  const ready = games.filter((g) => g.ready).map((g) => g.game.name);
+  const closest = games.find((g) => !g.ready);
   const mine = live.players.find((p) => p.userId === me.id)?.status;
   const answered = new Set(live.players.map((p) => p.userId));
-  // Only people who play this game are waited on.
-  const waiting = game.members.filter((m) => !answered.has(m.id));
+  const waiting = ctx.members.filter((m) => !answered.has(m.id));
   const name = (id: string) => ctx.byId.get(id);
   const act = (a: LiveAction) => liveAction.bind(null, live.session.id, a);
 
   const headline =
     summary.state === "full"
-      ? `✅ Party's full (${summary.playing.length}/${P}). Queue up!`
+      ? `✅ Ready to play: ${ready.join(", ")}. Queue up!`
       : summary.state === "paused"
         ? "⏸️ Paused: waiting on a quick dinner"
-        : `🎮 ${summary.playing.length}/${P} in, need ${summary.needed} more`;
+        : `🎮 ${summary.playing.length} in${closest ? `, ${closest.game.name} needs ${closest.needed} more` : ""}`;
 
-  // Upcoming dinners for people in the lobby, with the last sensible queue.
+  // Upcoming dinners for people in the lobby, with the last sensible queue (for the readiest game).
+  const queueGame = games[0]?.game ?? mainGame(ctx).game;
   const headsUps = summary.playing
     .map((id) => statusOf.get(id))
     .filter((s): s is MemberNow => !!s?.nextDinner && s.nextDinner.startMs > now && s.nextDinner.startMs - now < 4 * 3_600_000);
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-5">
       <div className="flex flex-wrap items-end justify-between gap-2">
         <div>
-          <h2 className="text-lg font-bold">{game.game.name}</h2>
+          <h1 className="h1">Live lobby</h1>
           <p className="text-sm text-muted">
             Opened {fmtRelative(live.session.startAt.getTime(), now)} by {name(live.session.createdBy ?? "")?.name ?? "someone"}
           </p>
         </div>
-        <ActionButton className="btn btn-ghost text-xs" action={act("end")} confirm={`End the ${game.game.name} lobby for everyone?`}>
+        <ActionButton className="btn btn-ghost text-xs" action={act("end")} confirm="End this lobby for everyone?">
           End lobby
         </ActionButton>
       </div>
 
       <div className={`card space-y-4 ${summary.state === "full" ? "border-free/60" : ""}`}>
-        <div className="text-xl font-bold">{headline}</div>
+        <div className="space-y-2">
+          <div className="text-xl font-bold">{headline}</div>
+          {games.length > 0 && (
+            <div className="flex flex-wrap gap-1.5" title="Players in the lobby who play each game, out of its party size">
+              {games.map((g) => (
+                <span key={g.game.id} className={`chip ${g.ready ? "text-free" : ""}`}>
+                  {progressText(g)}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
 
         <div className="flex flex-wrap gap-2">
           {(!mine || mine === "declined" || mine === "left" || mine === "soon") && (
@@ -237,8 +215,8 @@ function LobbyCard({
           {headsUps.map((s) => (
             <div key={s.member.id}>
               {s.nextDinner!.kind === "Q" ? "🍔" : "🍝"} <b>{s.member.name}</b> eats at {fmtTime(s.nextDinner!.startMs, zone)} (
-              {s.nextDinner!.kind === "Q" ? "quick" : "long"}). Last queue ~
-              {fmtTime(s.nextDinner!.startMs - game.game.matchMinutes * 60_000, zone)} {zoneAbbr(zone)}.
+              {s.nextDinner!.kind === "Q" ? "quick" : "long"}). Last {queueGame.name} queue ~
+              {fmtTime(s.nextDinner!.startMs - queueGame.matchMinutes * 60_000, zone)} {zoneAbbr(zone)}.
             </div>
           ))}
         </div>

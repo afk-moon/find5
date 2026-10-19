@@ -14,7 +14,7 @@ import { partyLabel } from "@/lib/games";
 import type { AwayResult } from "@/server/away";
 import { mainGame, sessionGame, type GameContext, type GameView, type GroupContext, type MemberView } from "@/server/context";
 import type { LateTally } from "@/server/lateness";
-import type { LiveSummary, PlaySession } from "@/server/sessions";
+import { gamesInLobby, progressText, type LiveSummary, type PlaySession } from "@/server/sessions";
 import type { WfhState } from "@/server/wfh";
 import type { ActionRow, Button, DiscordMessage } from "./rest";
 
@@ -152,9 +152,10 @@ export function storedPlannedMessage(ctx: GroupContext, session: PlaySession, la
 }
 
 /**
- * The live lobby post. `freeNow` is everyone free by their schedule who hasn't answered yet. Pass it on
- * every render, edits included, or the "Free right now" line vanishes as soon as someone taps a button.
- * (Edited messages don't ping, so keeping the mentions doesn't notify anyone again.)
+ * The live lobby post. The lobby is for every game: it says which games the people in it can play now,
+ * and how close the rest are. `freeNow` is everyone free by their schedule who hasn't answered yet. Pass
+ * it on every render, edits included, or the "Free right now" line vanishes as soon as someone taps a
+ * button. (Edited messages don't ping, so keeping the mentions doesn't notify anyone again.)
  */
 export function lobbyMessage(
   ctx: GroupContext,
@@ -162,18 +163,20 @@ export function lobbyMessage(
   summary: LiveSummary,
   freeNow: readonly string[],
 ): DiscordMessage {
-  const { game } = sessionGame(ctx, session);
-  const P = game.partySize;
   const active = session.status === "active";
+  const games = gamesInLobby(summary);
+  const ready = games.filter((g) => g.ready).map((g) => g.game.name);
+  const closest = games.find((g) => !g.ready);
   const header = !active
-    ? `🏁 **${game.name} lobby closed.** ${summary.playing.length >= P ? "GGs!" : "Start a new one with /lfg."}`
+    ? `🏁 **Lobby closed.** ${ready.length ? "GGs!" : "Start a new one with /lfg."}`
     : summary.state === "full"
-      ? `✅ **${game.name}: party's full!** (${summary.playing.length}/${P}) Queue up.`
+      ? `✅ **Ready to play:** ${ready.join(", ")}. Queue up!`
       : summary.state === "paused"
-        ? `⏸️ **${game.name}: paused,** waiting on dinner.`
-        : `🎮 **${game.name}: who's in?** ${summary.playing.length}/${P}, need ${summary.needed} more`;
+        ? "⏸️ **Paused,** waiting on dinner."
+        : `🎮 **Who's on?** ${summary.playing.length} in${closest ? `, ${closest.game.name} needs ${closest.needed} more` : ""}`;
   const lines = [header];
   if (summary.playing.length) lines.push(`In: ${names(ctx, summary.playing)}`);
+  if (active && games.length) lines.push(`🎯 ${games.map(progressText).join(" · ")}`);
   for (const e of summary.eating) {
     const back = e.backAt ? `, back ${discordTs(e.backAt, "R")}` : "";
     lines.push(`${e.kind === "quick" ? "🍔" : "🍝"} ${mention(ctx.byId.get(e.id))}: ${e.kind} dinner${back}`);
@@ -229,10 +232,16 @@ export function lobbyMovedMessage(newRef: string, guildId?: string): DiscordMess
   return { content: `↪️ This lobby moved to a newer post${where}`, components: [], allowed_mentions: { parse: [] } };
 }
 
-export function partyFullMessage(ctx: GameContext, summary: LiveSummary): DiscordMessage {
+/** Ping the people in the lobby who play the games that just got a full party. */
+export function gameReadyMessage(ctx: GroupContext, summary: LiveSummary, gameIds: readonly string[]): DiscordMessage {
+  const ready = summary.games.filter((g) => gameIds.includes(g.game.id));
+  const who = [...new Set(ready.flatMap((g) => g.playing))];
   return {
-    content: `✅ **${ctx.game.name}: party's full!** ${names(ctx, summary.playing)}, hop in voice and queue up.`,
-    allowed_mentions: { users: discordIdsOf(ctx, summary.playing) },
+    content: [
+      ...ready.map((g) => `✅ **${g.game.name}** is ready (${partyLabel(g.game.partySize)}): ${names(ctx, g.playing)}`),
+      "Hop in voice and queue up.",
+    ].join("\n"),
+    allowed_mentions: { users: discordIdsOf(ctx, who) },
   };
 }
 
@@ -250,15 +259,7 @@ export function awayMessage(away: AwayResult, zone: string, url: string): string
         `You're marked busy until then, and free ${day}${fmtRange(plan.freeFromMs, plan.freeUntilMs, zone)} ${z}.`,
     );
   }
-  if (away.lobbies.length) {
-    const which = away.lobbies.map((l) => l.game).join(" and ");
-    const many = away.lobbies.length > 1;
-    lines.push(
-      away.now
-        ? `🎮 You're in the ${which} ${many ? "lobbies" : "lobby"}.`
-        : `⏳ The ${which} ${many ? "lobbies show" : "lobby shows"} when you'll be back.`,
-    );
-  }
+  if (away.lobby) lines.push(away.now ? "🎮 You're in the lobby." : "⏳ The lobby shows when you'll be back.");
   if (away.vacationUntil) {
     lines.push(`🏖️ You're on vacation until ${fmtDate(away.vacationUntil)}, so your availability didn't change.`);
   }
