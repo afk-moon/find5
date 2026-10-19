@@ -48,7 +48,8 @@ describe("database round trips per page", () => {
 
   it("loads the Windows and Live tabs' extra data alongside the group", async () => {
     expect(await countRoundTrips(() => Promise.all([loadGroupContext(DEMO_GROUP_ID), upcomingPlanned(DEMO_GROUP_ID)]))).toBe(1);
-    expect(await countRoundTrips(() => Promise.all([loadGroupContext(DEMO_GROUP_ID), activeLive(DEMO_GROUP_ID)]))).toBe(1);
+    const group = { id: DEMO_GROUP_ID, homeTimezone: "America/Chicago" };
+    expect(await countRoundTrips(() => Promise.all([loadGroupContext(DEMO_GROUP_ID), activeLive(group)]))).toBe(1);
   });
 
   it("loads a WFH vote and its ballots in one round trip", async () => {

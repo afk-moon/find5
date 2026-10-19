@@ -6,11 +6,13 @@ import { discordTs } from "@/lib/format";
 import { setAwayUntil } from "@/server/away";
 import { loadGroupContext, type GroupContext, type MemberView } from "@/server/context";
 import { getLateTally, toggleLateReport } from "@/server/lateness";
-import { freeNowNotInLobby, syncLobby } from "@/server/notify";
+import { freeNowNotInLobby, markLobbyMoved, syncLobby } from "@/server/notify";
 import {
   activeLive,
+  endSession,
   getSession,
   goToDinner,
+  lobbyExpired,
   setPlayerStatus,
   startLive,
   summarizeLive,
@@ -116,14 +118,19 @@ async function onCommand(i: Interaction, ctx: GroupContext, me: MemberView, defe
       return reply(windowsMessage(ctx, upcomingWindows(ctx), appUrl()));
 
     case "lfg": {
-      const { sessionId } = await startLive(ctx, me.id);
+      const { sessionId, created, closed } = await startLive(ctx, me.id);
       const s = (await getSession(ctx.group.id, sessionId))!;
       const freeNow = freeNowNotInLobby(ctx, s.players.map((p) => p.userId));
-      // This reply becomes the lobby message that button clicks and the web app keep updated.
+      // Lobbies that expired (like last night's) were just closed: show that on their posts.
+      for (const id of closed) defer(() => syncLobby(ctx, id));
+      // This reply becomes the lobby message that button clicks and the web app keep updated. If the lobby was
+      // already open, its older post becomes a pointer to this one, so only one post has buttons.
+      const previous = created ? null : s.session.discordMessageId;
       defer(
-        rememberReply(i, (ref) =>
-          db.update(playSessions).set({ discordMessageId: ref }).where(eq(playSessions.id, sessionId)),
-        ),
+        rememberReply(i, async (ref) => {
+          await db.update(playSessions).set({ discordMessageId: ref }).where(eq(playSessions.id, sessionId));
+          if (previous && previous !== ref) await markLobbyMoved(previous, ref, i.guild_id);
+        }),
       );
       return reply(lobbyMessage(ctx, s.session, summarizeLive(ctx.group.partySize, s.players), freeNow));
     }
@@ -144,7 +151,7 @@ async function onCommand(i: Interaction, ctx: GroupContext, me: MemberView, defe
       const stale =
         "Discord's copy of /back is out of date, so it didn't send a time. Reload Discord (Ctrl+R, or restart " +
         "the app). If the time box still doesn't appear, run `npm run discord:register` again.";
-      const live = await activeLive(ctx.group.id);
+      const live = await activeLive(ctx.group);
       if (!live) return ephemeral(i.data?.name === "back" ? `⚠️ ${stale}` : "No lobby is open. Start one with /lfg.");
       const before = summarizeLive(ctx.group.partySize, live.players).state;
       const kind = option("kind") === "long" ? "long" : "quick";
@@ -171,12 +178,24 @@ async function onCommand(i: Interaction, ctx: GroupContext, me: MemberView, defe
 
 async function onButton(i: Interaction, ctx: GroupContext, me: MemberView, defer: Defer) {
   const [kind, a, b] = (i.data?.custom_id ?? "").split(":");
+  // A private note to whoever tapped, sent after the response (which edits the shared message).
+  const whisper = (content: string) =>
+    defer(() => postFollowup(i.application_id, i.token, { content, flags: EPHEMERAL, allowed_mentions: { parse: [] } }));
 
   if (kind === "lfg") {
     const action = a;
     const sessionId = b;
-    const s = await getSession(ctx.group.id, sessionId);
-    if (!s || s.session.status !== "active") return ephemeral("That lobby is closed. Start a new one with /lfg.");
+    let s = await getSession(ctx.group.id, sessionId);
+    if (!s) return ephemeral("That lobby is gone. Start a new one with /lfg.");
+    // An old lobby (like last night's) closes when someone taps it, and its post loses the buttons.
+    if (s.session.status === "active" && lobbyExpired(s.session, Date.now(), ctx.group.homeTimezone)) {
+      await endSession(ctx, sessionId);
+      s = (await getSession(ctx.group.id, sessionId))!;
+    }
+    if (s.session.status !== "active") {
+      whisper("That lobby is closed. Start a new one with /lfg.");
+      return update(lobbyMessage(ctx, s.session, summarizeLive(ctx.group.partySize, s.players), []));
+    }
     const before = summarizeLive(ctx.group.partySize, s.players).state;
     switch (action) {
       case "in":
@@ -233,8 +252,6 @@ async function onButton(i: Interaction, ctx: GroupContext, me: MemberView, defer
       defer(() => getDb().then((db) => db.update(playSessions).set({ discordMessageId: ref }).where(eq(playSessions.id, sessionId))));
     }
     // The shared message only ever shows counts; the clicker gets a private confirmation.
-    const whisper = (content: string) =>
-      defer(() => postFollowup(i.application_id, i.token, { content, flags: EPHEMERAL, allowed_mentions: { parse: [] } }));
     if (found.tally.voting === "closed") {
       whisper("Late reports for this session are closed.");
       return update(storedPlannedMessage(ctx, found.session, found.tally)); // shows the result and drops the buttons

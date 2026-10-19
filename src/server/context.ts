@@ -155,21 +155,23 @@ export interface Viewer {
 }
 
 /**
- * The signed-in user's id and group id: one quick lookup, so pages can start their own queries in
- * parallel with requireViewer(). Redirects to /login when there isn't one. Cached per request.
+ * The signed-in user's id, group id and the group's home time zone: one quick lookup, so pages can start
+ * their own queries in parallel with requireViewer(). Redirects to /login when there isn't one. Cached per
+ * request.
  */
-export const requireMember = cache(async (): Promise<{ userId: string; groupId: string }> => {
+export const requireMember = cache(async (): Promise<{ userId: string; groupId: string; homeTimezone: string }> => {
   const userId = await getSessionUserId();
   if (!userId) redirect("/login");
   const db = await getDb();
   const [membership] = await db
-    .select({ groupId: memberships.groupId })
+    .select({ groupId: memberships.groupId, homeTimezone: groups.homeTimezone })
     .from(memberships)
+    .innerJoin(groups, eq(groups.id, memberships.groupId))
     .where(eq(memberships.userId, userId))
     .orderBy(asc(memberships.joinedAt))
     .limit(1);
   if (!membership) redirect("/login?stale=1");
-  return { userId, groupId: membership.groupId };
+  return { userId, groupId: membership.groupId, homeTimezone: membership.homeTimezone };
 });
 
 /**

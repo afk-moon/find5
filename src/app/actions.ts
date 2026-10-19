@@ -188,8 +188,8 @@ export async function toggleLateReportAction(sessionId: string, lateUserId: stri
 export async function startLfgAction(): Promise<ActionResult> {
   const { ctx, userId } = await requireViewer();
   try {
-    const { sessionId, created } = await startLive(ctx, userId);
-    await syncLobby(ctx, sessionId);
+    const { sessionId, created, closed } = await startLive(ctx, userId);
+    await Promise.all([syncLobby(ctx, sessionId), ...closed.map((id) => syncLobby(ctx, id))]);
     refreshAll();
     return { ok: true, message: created ? "Lobby open" : "Joined the lobby" };
   } catch (e) {

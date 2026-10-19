@@ -147,7 +147,7 @@ export function lobbyMessage(
   const P = ctx.group.partySize;
   const active = session.status === "active";
   const header = !active
-    ? "🏁 **Lobby closed.** GGs!"
+    ? `🏁 **Lobby closed.** ${summary.playing.length >= P ? "GGs!" : "Start a new one with /lfg."}`
     : summary.state === "full"
       ? `✅ **Party's full!** (${summary.playing.length}/${P}) Queue up.`
       : summary.state === "paused"
@@ -166,6 +166,9 @@ export function lobbyMessage(
   if (summary.declined.length) lines.push(`🙅 Not tonight: ${names(ctx, summary.declined)}`);
   if (summary.left.length) lines.push(`👋 Left: ${names(ctx, summary.left)}`);
   if (active && freeNow.length) lines.push(`📣 Free right now: ${names(ctx, freeNow)}`);
+  // When it opened, so an old post is obvious at a glance ("2 days ago" while open, the full date once closed).
+  const opener = ctx.byId.get(session.createdBy ?? "")?.name;
+  lines.push(`-# Opened ${discordTs(session.startAt.getTime(), active ? "R" : "f")}${opener ? ` by ${opener}` : ""}`);
 
   const id = session.id;
   const components: ActionRow[] =
@@ -195,6 +198,16 @@ export function lobbyMessage(
     components,
     allowed_mentions: { users: active ? discordIdsOf(ctx, freeNow) : [] },
   };
+}
+
+/**
+ * An older post of a lobby that was posted again with /lfg: point to the new post and drop the buttons, so
+ * only one post per lobby has them. `newRef` is "channelId:messageId".
+ */
+export function lobbyMovedMessage(newRef: string, guildId?: string): DiscordMessage {
+  const [channelId, messageId] = newRef.split(":");
+  const where = guildId && channelId && messageId ? `: https://discord.com/channels/${guildId}/${channelId}/${messageId}` : " below.";
+  return { content: `↪️ This lobby moved to a newer post${where}`, components: [], allowed_mentions: { parse: [] } };
 }
 
 export function partyFullMessage(ctx: GroupContext, summary: LiveSummary): DiscordMessage {

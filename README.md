@@ -9,7 +9,9 @@ optional Discord bot.
 - **WFH sync:** hybrid members vote on a shared work-from-home day that unlocks the most play time.
 - **Vacation:** in **My availability**, pick the first and last day you're away. You show as busy on every
   day in between, whatever your usual week or one-off days say, and the Live page shows who's on vacation.
-- **Live lobby:** “who's on right now?” with I'm in / in 15 min / dinner / back.
+- **Live lobby:** “who's on right now?” with I'm in / in 15 min / dinner / back. A lobby closes at 4am
+  (group time) or after 12 hours, and its Discord post switches to “Lobby closed” without buttons, so an old
+  post never looks open. Posting `/lfg` again while a lobby is open moves it to the new post.
 - **Late reports:** once a locked-in session starts, teammates can report who was late. Anyone late in
   more than half of their last 10 sessions gets a ⏰ **Frequently late** tag next to their name.
 - **Discord:** login, slash commands, lobby buttons, announcements, and Scheduled Events.

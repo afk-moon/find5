@@ -67,7 +67,7 @@ export async function setAwayUntil(
   const plan = now && (!today || vacation) ? null : planAway(member, nowMs, backMs);
 
   const [live, planned] = await Promise.all([
-    activeLive(ctx.group.id, nowMs),
+    activeLive(ctx.group, nowMs),
     upcomingPlanned(ctx.group.id, nowMs),
     Promise.all((plan?.overrides ?? []).map((o) => saveDateOverride(userId, o.date, o.cells))),
   ]);

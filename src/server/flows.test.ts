@@ -8,15 +8,33 @@ process.env.PGLITE_DIR = mkdtempSync(path.join(tmpdir(), "receptionist-flows-"))
 
 const { loadGroupContext, toEngineInput } = await import("./context");
 const { upcomingWindows } = await import("./windows");
-const { lockInWindow, upcomingPlanned, startLive, setPlayerStatus, goToDinner, getSession, summarizeLive, endSession, activeLive } =
-  await import("./sessions");
+const {
+  lockInWindow,
+  upcomingPlanned,
+  startLive,
+  setPlayerStatus,
+  goToDinner,
+  getSession,
+  summarizeLive,
+  endSession,
+  activeLive,
+  lobbyCutoff,
+} = await import("./sessions");
 const { getWfhState, toggleBallotDay, closeVote, reopenVote, weekStartOf } = await import("./wfh");
 const { saveProfile, saveDateOverride, createMember, saveWfhWeek, addVacation, removeVacation } = await import("./availability");
 const { openLateVotes, toggleLateReport, getLateTally } = await import("./lateness");
 const { setAwayUntil, resolveBackTime } = await import("./away");
 const { freeNowNotInLobby } = await import("./notify");
-const { lobbyMessage, wfhVoteMessage, plannedSessionMessage, windowsMessage, storedPlannedMessage, mention, awayMessage } =
-  await import("@/discord/messages");
+const {
+  lobbyMessage,
+  lobbyMovedMessage,
+  wfhVoteMessage,
+  plannedSessionMessage,
+  windowsMessage,
+  storedPlannedMessage,
+  mention,
+  awayMessage,
+} = await import("@/discord/messages");
 const { handleInteraction } = await import("@/discord/handlers");
 const { getDb } = await import("@/db");
 const { memberProfiles, playSessions, playSessionPlayers } = await import("@/db/schema");
@@ -100,7 +118,7 @@ describe("live lobby", () => {
     expect(summarizeLive(5, s.players).state).toBe("full");
 
     await endSession(ctx, sessionId);
-    expect(await activeLive(ctx.group.id)).toBeNull();
+    expect(await activeLive(ctx.group)).toBeNull();
     await expect(setPlayerStatus(ctx, sessionId, "demo-kai", "in")).rejects.toThrow(/ended/);
   });
 });
@@ -346,10 +364,19 @@ describe("/back with a time", () => {
       s = (await getSession(ctx.group.id, lobby.id))!;
       expect(summarizeLive(5, s.players).playing).toEqual(["demo-rosa"]);
 
+      // By 5am last evening's lobby has expired (lobbies close at 4am, group time), so open one that morning.
       // 4–8am is outside every gaming day, so "now" only touches the lobby.
-      const early = await setAwayUntil(ctx, "demo-rosa", "now", at("2031-03-05T05:00"));
-      expect(early.plan).toBeNull();
-      expect(awayMessage(early, zone(), "http://localhost:3000")).toBe("✅ Welcome back!\n🎮 You're in the lobby.");
+      const [dawn] = await db
+        .insert(playSessions)
+        .values({ groupId: ctx.group.id, kind: "live", startAt: new Date(at("2031-03-05T04:30")), createdBy: "demo-kai" })
+        .returning();
+      try {
+        const early = await setAwayUntil(ctx, "demo-rosa", "now", at("2031-03-05T05:00"));
+        expect(early).toMatchObject({ plan: null, lobby: { sessionId: dawn.id } });
+        expect(awayMessage(early, zone(), "http://localhost:3000")).toBe("✅ Welcome back!\n🎮 You're in the lobby.");
+      } finally {
+        await endSession(ctx, dawn.id);
+      }
     } finally {
       await endSession(ctx, lobby.id);
     }
@@ -399,7 +426,8 @@ describe("lobby message in Discord", () => {
         () => {},
       );
       expect(opened.data!.content).toContain("📣 Free right now");
-      sessionId = (await activeLive(ctx.group.id))!.session.id;
+      expect(opened.data!.content).toMatch(/\n-# Opened <t:\d+:R> by Kai$/);
+      sessionId = (await activeLive(ctx.group))!.session.id;
 
       // Sam taps "I'm in": the message is edited in place and still lists who's free but hasn't answered.
       const tapped = await handleInteraction(
@@ -479,5 +507,74 @@ describe("vacation", () => {
     } finally {
       await removeVacation("demo-rosa", trip.id);
     }
+  });
+});
+
+describe("old lobbies", () => {
+  const CT = "America/Chicago"; // the demo group's home zone
+  const ct = (iso: string) => DateTime.fromISO(iso, { zone: CT }).toMillis();
+
+  it("close at 4am (group time) or after 12 hours, whichever comes first", () => {
+    expect(lobbyCutoff(ct("2031-03-21T21:00"), CT)).toBe(ct("2031-03-21T09:00")); // 12 hours
+    expect(lobbyCutoff(ct("2031-03-21T02:00"), CT)).toBe(ct("2031-03-20T14:00")); // still last night
+    expect(lobbyCutoff(ct("2031-03-21T05:00"), CT)).toBe(ct("2031-03-21T04:00")); // a new day
+  });
+
+  it("/lfg on a new day closes last night's lobby and opens a fresh one", async () => {
+    const db = await getDb();
+    const [old] = await db
+      .insert(playSessions)
+      .values({ groupId: ctx.group.id, kind: "live", startAt: new Date(ct("2031-03-21T03:00")), createdBy: "demo-kai" })
+      .returning();
+    const { sessionId, created, closed } = await startLive(ctx, "demo-sam", ct("2031-03-21T09:00"));
+    try {
+      expect(created).toBe(true);
+      expect(closed).toEqual([old.id]);
+      expect((await activeLive(ctx.group, ct("2031-03-21T09:00")))!.session.id).toBe(sessionId);
+      const was = (await getSession(ctx.group.id, old.id))!;
+      expect(was.session.status).toBe("ended");
+      const post = lobbyMessage(ctx, was.session, summarizeLive(5, was.players), []);
+      expect(post.content).toContain("🏁 **Lobby closed.** Start a new one with /lfg.");
+      expect(post.content).toContain(`-# Opened <t:${ct("2031-03-21T03:00") / 1000}:f> by Kai`);
+      expect(post.components).toEqual([]);
+    } finally {
+      await endSession(ctx, sessionId);
+    }
+  });
+
+  it("tapping an old lobby's button closes it and removes the buttons", async () => {
+    const db = await getDb();
+    await db.update(memberProfiles).set({ discordId: "1001" }).where(eq(memberProfiles.userId, "demo-kai"));
+    ctx = await fresh();
+    const [old] = await db
+      .insert(playSessions)
+      .values({ groupId: ctx.group.id, kind: "live", startAt: new Date(Date.now() - 13 * 3_600_000), createdBy: "demo-kai" })
+      .returning();
+    const tasks: Array<() => Promise<unknown>> = [];
+    const res = await handleInteraction(
+      {
+        id: "1",
+        application_id: "app",
+        type: 3,
+        token: "t",
+        channel_id: "chan",
+        member: { user: { id: "1001", username: "kai" } },
+        data: { custom_id: `lfg:in:${old.id}` },
+        message: { id: "msg", channel_id: "chan" },
+      },
+      (task) => tasks.push(task),
+    );
+    expect(res.type).toBe(7); // redraws the old post
+    expect(res.data!.content).toContain("Lobby closed");
+    expect(res.data!.components).toEqual([]);
+    expect(tasks).toHaveLength(1); // the private "that lobby is closed" note
+    expect((await getSession(ctx.group.id, old.id))!.session.status).toBe("ended");
+  });
+
+  it("an older post of a re-posted lobby points to the new one", () => {
+    const moved = lobbyMovedMessage("chan:new-msg", "guild");
+    expect(moved.content).toBe("↪️ This lobby moved to a newer post: https://discord.com/channels/guild/chan/new-msg");
+    expect(moved.components).toEqual([]);
+    expect(lobbyMovedMessage("chan:new-msg").content).toBe("↪️ This lobby moved to a newer post below.");
   });
 });

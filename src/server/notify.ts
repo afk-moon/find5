@@ -3,6 +3,7 @@ import { getDb } from "@/db";
 import { playSessions, wfhVotes } from "@/db/schema";
 import {
   lobbyMessage,
+  lobbyMovedMessage,
   partyFullMessage,
   plannedSessionMessage,
   storedPlannedMessage,
@@ -13,7 +14,7 @@ import { appUrl, botConfigured, createScheduledEvent, editMessage, postMessage }
 import { lateVotingClosesAt, type PlayWindow } from "@/engine";
 import type { GroupContext } from "./context";
 import { getLateTally } from "./lateness";
-import { getSession, summarizeLive, type LiveSummary, type PlaySession } from "./sessions";
+import { closeExpiredLobbies, getSession, summarizeLive, type LiveSummary, type PlaySession } from "./sessions";
 import { getWfhState } from "./wfh";
 import { membersNow } from "./windows";
 
@@ -112,6 +113,21 @@ export function syncLobby(ctx: GroupContext, sessionId: string, previous?: LiveS
       await postMessage(channelId, partyFullMessage(ctx, summary));
     }
   });
+}
+
+/** The older post of a lobby that was just posted again: point it to the new post and drop its buttons. */
+export function markLobbyMoved(oldRef: string, newRef: string, guildId?: string) {
+  return safely("lobby moved", async () => {
+    const from = parseRef(oldRef);
+    if (from) await editMessage(from.channelId, from.messageId, lobbyMovedMessage(newRef, guildId));
+  });
+}
+
+/** Close lobbies that expired (like last night's) and update their posts to "Lobby closed". Returns how many. */
+export async function closeOldLobbies(ctx: GroupContext, nowMs = Date.now()) {
+  const closed = await closeExpiredLobbies(ctx.group, nowMs);
+  for (const id of closed) await syncLobby(ctx, id);
+  return closed.length;
 }
 
 /** Refresh the WFH vote message (or post it, e.g. from the weekly cron). */

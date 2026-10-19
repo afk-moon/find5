@@ -1,4 +1,5 @@
-import { and, asc, desc, eq, gt, inArray, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, inArray, lt, type SQL } from "drizzle-orm";
+import { DateTime } from "luxon";
 import { getDb } from "@/db";
 import { playSessionPlayers, playSessions, type PlayerStatus, type SessionPlan } from "@/db/schema";
 import type { PlayWindow } from "@/engine";
@@ -117,14 +118,36 @@ export async function cancelSession(groupId: string, sessionId: string, nowMs = 
 
 // ─── Live (spontaneous) sessions ───────────────────────────────────────────────────────────
 
-export async function activeLive(groupId: string, nowMs = Date.now()): Promise<SessionWithPlayers | null> {
+/** What lobby lookups need to know about the group. */
+export type LobbyGroup = { id: string; homeTimezone: string };
+
+/** Gaming days end at 4am. */
+const DAY_END_HOUR = 4;
+
+/**
+ * Live lobbies last until the end of the day they opened on (4am in the group's home zone), and 12 hours at
+ * most, so last night's lobby is never mistaken for tonight's. A lobby is still open if it started at or
+ * after this instant.
+ */
+export function lobbyCutoff(nowMs: number, zone: string): number {
+  const local = DateTime.fromMillis(nowMs, { zone });
+  const dayEnd = local.set({ hour: DAY_END_HOUR, minute: 0, second: 0, millisecond: 0 });
+  const dayStart = (local < dayEnd ? dayEnd.minus({ days: 1 }) : dayEnd).toMillis();
+  return Math.max(nowMs - LIVE_MAX_AGE_MS, dayStart);
+}
+
+export function lobbyExpired(session: PlaySession, nowMs: number, zone: string): boolean {
+  return session.kind === "live" && session.startAt.getTime() < lobbyCutoff(nowMs, zone);
+}
+
+export async function activeLive(group: LobbyGroup, nowMs = Date.now()): Promise<SessionWithPlayers | null> {
   const [live] = await findWithPlayers(
     () =>
       and(
-        eq(playSessions.groupId, groupId),
+        eq(playSessions.groupId, group.id),
         eq(playSessions.kind, "live"),
         eq(playSessions.status, "active"),
-        gt(playSessions.startAt, new Date(nowMs - LIVE_MAX_AGE_MS)),
+        gte(playSessions.startAt, new Date(lobbyCutoff(nowMs, group.homeTimezone))),
       ),
     "desc",
     1,
@@ -132,20 +155,41 @@ export async function activeLive(groupId: string, nowMs = Date.now()): Promise<S
   return live ?? null;
 }
 
-/** Open a lobby (or join the one that's already open). */
-export async function startLive(ctx: GroupContext, userId: string) {
-  const existing = await activeLive(ctx.group.id);
+/** Lobbies still marked open after they expired (nobody tapped End): close them. Returns their ids. */
+export async function closeExpiredLobbies(group: LobbyGroup, nowMs = Date.now()): Promise<string[]> {
+  const db = await getDb();
+  const rows = await db
+    .update(playSessions)
+    .set({ status: "ended", endAt: new Date(nowMs) })
+    .where(
+      and(
+        eq(playSessions.groupId, group.id),
+        eq(playSessions.kind, "live"),
+        eq(playSessions.status, "active"),
+        lt(playSessions.startAt, new Date(lobbyCutoff(nowMs, group.homeTimezone))),
+      ),
+    )
+    .returning({ id: playSessions.id });
+  return rows.map((r) => r.id);
+}
+
+/**
+ * Open a lobby (or join the one that's open). Expired lobbies are closed first; `closed` lists them so their
+ * Discord posts can be updated.
+ */
+export async function startLive(ctx: GroupContext, userId: string, nowMs = Date.now()) {
+  const [closed, existing] = await Promise.all([closeExpiredLobbies(ctx.group, nowMs), activeLive(ctx.group, nowMs)]);
   if (existing) {
     await setPlayerStatus(ctx, existing.session.id, userId, "in");
-    return { sessionId: existing.session.id, created: false };
+    return { sessionId: existing.session.id, created: false, closed };
   }
   const db = await getDb();
   const [session] = await db
     .insert(playSessions)
-    .values({ groupId: ctx.group.id, kind: "live", startAt: new Date(), createdBy: userId })
+    .values({ groupId: ctx.group.id, kind: "live", startAt: new Date(nowMs), createdBy: userId })
     .returning();
   await db.insert(playSessionPlayers).values({ sessionId: session.id, userId, status: "in" });
-  return { sessionId: session.id, created: true };
+  return { sessionId: session.id, created: true, closed };
 }
 
 export async function setPlayerStatus(
