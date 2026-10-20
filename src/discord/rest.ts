@@ -74,12 +74,23 @@ export async function postFollowup(applicationId: string, interactionToken: stri
   if (!res.ok) throw new Error(`Discord follow-up → ${res.status} ${await res.text()}`);
 }
 
+/**
+ * DM someone (by Discord user id). Works for anyone who shares a server with the bot, unless they turned off
+ * "Allow direct messages from server members"; then Discord refuses (error 50007).
+ */
+export async function sendDirectMessage(discordUserId: string, msg: DiscordMessage) {
+  const channel = await discordFetch<{ id: string }>("/users/@me/channels", "POST", { recipient_id: discordUserId });
+  return postMessage(channel.id, msg);
+}
+
 export interface ScheduledEventInput {
   name: string;
   description?: string;
   startMs: number;
   endMs: number;
   voiceChannelId?: string | null;
+  /** Where it happens when there's no voice channel (the game's name). */
+  location?: string;
 }
 
 /** Discord Scheduled Event: everyone who taps "Interested" gets notified when it starts. */
@@ -93,6 +104,13 @@ export function createScheduledEvent(guildId: string, e: ScheduledEventInput) {
   };
   const body = e.voiceChannelId
     ? { ...base, entity_type: 2, channel_id: e.voiceChannelId }
-    : { ...base, entity_type: 3, entity_metadata: { location: "Valorant" } };
+    : { ...base, entity_type: 3, entity_metadata: { location: (e.location || "Online").slice(0, 100) } };
   return discordFetch<{ id: string }>(`/guilds/${guildId}/scheduled-events`, "POST", body);
+}
+
+/** Change a scheduled event's description (e.g. the party list, after someone drops out). */
+export function editScheduledEvent(guildId: string, eventId: string, e: { description: string }) {
+  return discordFetch<{ id: string }>(`/guilds/${guildId}/scheduled-events/${eventId}`, "PATCH", {
+    description: e.description.slice(0, 1000),
+  });
 }

@@ -3,18 +3,36 @@ import { getDb } from "@/db";
 import { playSessions, wfhVotes } from "@/db/schema";
 import {
   lobbyMessage,
-  lobbyMovedMessage,
+  lobbyReplacedMessage,
   partyLabel,
   plannedSessionMessage,
+  stackReadyDm,
   storedPlannedMessage,
   wfhDecisionMessage,
   wfhVoteMessage,
 } from "@/discord/messages";
-import { appUrl, botConfigured, createScheduledEvent, editMessage, postMessage } from "@/discord/rest";
+import {
+  appUrl,
+  botConfigured,
+  createScheduledEvent,
+  editMessage,
+  editScheduledEvent,
+  postMessage,
+  sendDirectMessage,
+} from "@/discord/rest";
 import { lateVotingClosesAt, type PlayWindow } from "@/engine";
 import type { GameContext, GroupContext } from "./context";
 import { getLateTally } from "./lateness";
-import { closeExpiredLobbies, getSession, summarizeLive, type PlaySession } from "./sessions";
+import { getParty } from "./party";
+import {
+  closeExpiredLobbies,
+  fullStacks,
+  getSession,
+  summarizeLive,
+  type GameProgress,
+  type PlaySession,
+  type SessionPlayer,
+} from "./sessions";
 import { getWfhState } from "./wfh";
 import { membersNow } from "./windows";
 
@@ -42,21 +60,26 @@ export function freeNowNotInLobby(ctx: GroupContext, lobby: Iterable<string>): s
     .map((m) => m.member.id);
 }
 
+/** "Party: Maya, Dev, …" for the server event. */
+const partyDescription = (ctx: GroupContext, party: readonly string[]) =>
+  `Party: ${party.map((id) => ctx.byId.get(id)?.name ?? "someone").join(", ")}`;
+
 /** Post the locked-in session (with its dinner/last-queue timeline and late check) and create a Scheduled Event. */
 export function announceLockIn(ctx: GameContext, session: PlaySession, window: PlayWindow) {
   return safely("lock-in", async () => {
     const channelId = ctx.group.discordChannelId;
     if (!channelId) return;
-    const late = (await getLateTally(ctx.group.id, session.id))?.tally;
-    const posted = await postMessage(channelId, plannedSessionMessage(ctx, window, late));
+    const [late, found] = await Promise.all([getLateTally(ctx.group.id, session.id), getParty(ctx, session.id)]);
+    const posted = await postMessage(channelId, plannedSessionMessage(ctx, window, late?.tally, found?.party));
     let eventId: string | null = null;
     if (ctx.group.discordGuildId && window.startMs > Date.now() + 60_000) {
       const event = await createScheduledEvent(ctx.group.discordGuildId, {
         name: `${ctx.game.name} ${partyLabel(ctx.game.partySize)}`,
-        description: `Party: ${window.party.map((id) => ctx.byId.get(id)?.name).join(", ")}`,
+        description: partyDescription(ctx, window.party),
         startMs: window.startMs,
         endMs: window.endMs,
         voiceChannelId: ctx.group.discordVoiceChannelId,
+        location: ctx.game.name,
       });
       eventId = event.id;
     }
@@ -68,12 +91,20 @@ export function announceLockIn(ctx: GameContext, session: PlaySession, window: P
   });
 }
 
-/** Re-render a locked-in session's Discord message (late report counts, or the result once voting closes). */
+/**
+ * Re-render a locked-in session's Discord message: the party (drop-outs, votes to remove someone) and the
+ * late check. Before it starts, the server event's party list is updated too.
+ */
 export function syncPlannedMessage(ctx: GroupContext, sessionId: string) {
   return safely("planned session", async () => {
-    const found = await getLateTally(ctx.group.id, sessionId);
-    const ref = parseRef(found?.session.discordMessageId);
-    if (found && ref) await editMessage(ref.channelId, ref.messageId, storedPlannedMessage(ctx, found.session, found.tally));
+    const [late, found] = await Promise.all([getLateTally(ctx.group.id, sessionId), getParty(ctx, sessionId)]);
+    if (!late || !found) return;
+    const ref = parseRef(late.session.discordMessageId);
+    if (ref) await editMessage(ref.channelId, ref.messageId, storedPlannedMessage(ctx, late.session, late.tally, found.party));
+    const { discordEventId } = late.session;
+    if (discordEventId && ctx.group.discordGuildId && late.session.startAt.getTime() > Date.now()) {
+      await editScheduledEvent(ctx.group.discordGuildId, discordEventId, { description: partyDescription(ctx, found.party.party) });
+    }
   });
 }
 
@@ -90,11 +121,70 @@ export async function finishLateChecks(ctx: GroupContext, nowMs = Date.now()) {
   return closed.length;
 }
 
+/** Link to a Discord message from its stored "channelId:messageId" ref. */
+function messageLink(ctx: GroupContext, ref: string | null | undefined): string | null {
+  const at = parseRef(ref);
+  return at && ctx.group.discordGuildId ? `https://discord.com/channels/${ctx.group.discordGuildId}/${at.channelId}/${at.messageId}` : null;
+}
+
+/** For opt-in DMs: the lobby's full 5-stacks before a change (see fullStacks), and who made the change. */
+export interface StackWatch {
+  before: readonly string[];
+  /** Whoever tapped: they just saw the stack fill, so they don't get a DM about it. */
+  actorId?: string;
+}
+
+/** One opt-in DM: who gets it, and the game whose 5-stack filled. */
+export interface StackDm {
+  userId: string;
+  discordId: string;
+  game: GameProgress;
+}
+
 /**
- * Create or refresh the lobby message. There's no separate "ready" ping: whoever tapped I'm in is usually in
- * voice already, and the post itself shows which games are ready.
+ * Who to DM when 5-stacks just filled in the lobby (they weren't full before): people in the lobby who play
+ * that game, asked for DMs in their profile, and logged in with Discord. One DM each.
  */
-export function syncLobby(ctx: GroupContext, sessionId: string) {
+export function stackDms(ctx: GroupContext, players: readonly SessionPlayer[], watch: StackWatch): StackDm[] {
+  const summary = summarizeLive(ctx.games, [...players]);
+  const full = fullStacks(summary);
+  const filled = summary.games.filter((g) => full.includes(g.game.id) && !watch.before.includes(g.game.id));
+  const inLobby = new Set(players.filter((p) => p.status !== "declined" && p.status !== "left").map((p) => p.userId));
+  const sent = new Set<string>();
+  const dms: StackDm[] = [];
+  for (const game of filled) {
+    for (const userId of game.game.players) {
+      const m = ctx.byId.get(userId);
+      if (!m?.dmWhenFull || !m.discordId || !inLobby.has(userId) || userId === watch.actorId || sent.has(userId)) continue;
+      sent.add(userId);
+      dms.push({ userId, discordId: m.discordId, game });
+    }
+  }
+  return dms;
+}
+
+/**
+ * Send the DMs from stackDms, linking to the lobby post (`lobbyRef` is "channelId:messageId"). A DM that fails
+ * (they turned off DMs from server members) is skipped.
+ */
+export function sendStackDms(ctx: GroupContext, lobbyRef: string | null, dms: readonly StackDm[]) {
+  return safely("stack DMs", async () => {
+    const link = messageLink(ctx, lobbyRef);
+    for (const dm of dms) {
+      try {
+        await sendDirectMessage(dm.discordId, stackReadyDm(ctx, dm.game, link));
+      } catch (err) {
+        console.error(`[discord] DM to ${dm.userId} failed:`, err);
+      }
+    }
+  });
+}
+
+/**
+ * Create or refresh the lobby message. There's no "ready" ping in the channel (whoever tapped I'm in is usually
+ * in voice already); pass `watch` to DM the people who asked for it when a 5-stack fills.
+ */
+export function syncLobby(ctx: GroupContext, sessionId: string, watch?: StackWatch) {
   return safely("lobby", async () => {
     const s = await getSession(ctx.group.id, sessionId);
     if (!s) return;
@@ -102,24 +192,26 @@ export function syncLobby(ctx: GroupContext, sessionId: string) {
     // Every render lists who's free and hasn't answered, so edits don't drop that line.
     const message = lobbyMessage(ctx, s.session, summary, freeNowNotInLobby(ctx, s.players.map((p) => p.userId)));
     const ref = parseRef(s.session.discordMessageId);
+    let session = s.session;
     if (ref) {
       await editMessage(ref.channelId, ref.messageId, message);
     } else if (ctx.group.discordChannelId && s.session.status === "active") {
       const posted = await postMessage(ctx.group.discordChannelId, message);
+      const discordMessageId = `${ctx.group.discordChannelId}:${posted.id}`;
       const db = await getDb();
-      await db
-        .update(playSessions)
-        .set({ discordMessageId: `${ctx.group.discordChannelId}:${posted.id}` })
-        .where(eq(playSessions.id, sessionId));
+      await db.update(playSessions).set({ discordMessageId }).where(eq(playSessions.id, sessionId));
+      session = { ...session, discordMessageId };
     }
+    const dms = watch && session.status === "active" ? stackDms(ctx, s.players, watch) : [];
+    if (dms.length) await sendStackDms(ctx, session.discordMessageId, dms);
   });
 }
 
-/** The older post of a lobby that was just posted again: point it to the new post and drop its buttons. */
-export function markLobbyMoved(oldRef: string, newRef: string, guildId?: string) {
-  return safely("lobby moved", async () => {
+/** A lobby that closed because of a new /lfg: point its post to the new one and drop its buttons. */
+export function markLobbyReplaced(oldRef: string, newRef: string, guildId?: string) {
+  return safely("lobby replaced", async () => {
     const from = parseRef(oldRef);
-    if (from) await editMessage(from.channelId, from.messageId, lobbyMovedMessage(newRef, guildId));
+    if (from) await editMessage(from.channelId, from.messageId, lobbyReplacedMessage(newRef, guildId));
   });
 }
 

@@ -86,6 +86,8 @@ export interface ProfileInput {
   workStyle: "fixed" | "hybrid";
   nightBeforeWfhUntil: string | null;
   hybridDays: Partial<Record<1 | 2 | 3 | 4 | 5, HybridMode>>;
+  /** DM me on Discord when a lobby I'm in fills a 5-stack. Left out: keep what's saved. */
+  dmWhenFull?: boolean;
 }
 
 export async function saveProfile(userId: string, input: ProfileInput) {
@@ -96,6 +98,7 @@ export async function saveProfile(userId: string, input: ProfileInput) {
     timezone: input.timezone,
     workStyle: input.workStyle,
     nightBeforeWfhUntil: input.nightBeforeWfhUntil || null,
+    ...(typeof input.dmWhenFull === "boolean" ? { dmWhenFull: input.dmWhenFull } : {}),
   };
   await db
     .insert(memberProfiles)

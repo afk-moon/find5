@@ -1,7 +1,7 @@
 import { and, asc, desc, eq, gt, gte, inArray, lt, type SQL } from "drizzle-orm";
 import { DateTime } from "luxon";
 import { getDb } from "@/db";
-import { playSessionPlayers, playSessions, type PlayerStatus, type SessionPlan } from "@/db/schema";
+import { kickVotes, playSessionPlayers, playSessions, type PlayerStatus, type SessionPlan } from "@/db/schema";
 import type { PlayWindow } from "@/engine";
 import type { GameContext, GameView, GroupContext } from "./context";
 import { findWindowByBounds } from "./windows";
@@ -12,25 +12,39 @@ export interface SessionWithPlayers {
   session: PlaySession;
   players: SessionPlayer[];
 }
+/** A vote to remove someone from a locked-in session's party. */
+export interface KickVote {
+  voterId: string;
+  targetId: string;
+}
+/** A locked-in session with its players and the votes to remove someone. */
+export interface PlannedSession extends SessionWithPlayers {
+  votes: KickVote[];
+}
 
 /** How long a long-dinner break is assumed to take when someone taps "long dinner" live. */
 export const LONG_DINNER_MINUTES = 90;
 const LIVE_MAX_AGE_MS = 12 * 3_600_000;
 
-/** Sessions matching `where` (by start time) and their players, fetched side by side in one round trip. */
+/** Sessions matching `where` (by start time), their players and kick votes, fetched side by side in one round trip. */
 async function findWithPlayers(
   where: () => SQL | undefined,
   order: "asc" | "desc",
   limit: number,
-): Promise<SessionWithPlayers[]> {
+): Promise<PlannedSession[]> {
   const db = await getDb();
   const byStart = () => (order === "asc" ? asc(playSessions.startAt) : desc(playSessions.startAt));
-  const ids = db.select({ id: playSessions.id }).from(playSessions).where(where()).orderBy(byStart()).limit(limit);
-  const [rows, players] = await Promise.all([
+  const ids = () => db.select({ id: playSessions.id }).from(playSessions).where(where()).orderBy(byStart()).limit(limit);
+  const [rows, players, votes] = await Promise.all([
     db.select().from(playSessions).where(where()).orderBy(byStart()).limit(limit),
-    db.select().from(playSessionPlayers).where(inArray(playSessionPlayers.sessionId, ids)),
+    db.select().from(playSessionPlayers).where(inArray(playSessionPlayers.sessionId, ids())),
+    db.select().from(kickVotes).where(inArray(kickVotes.sessionId, ids())),
   ]);
-  return rows.map((session) => ({ session, players: players.filter((p) => p.sessionId === session.id) }));
+  return rows.map((session) => ({
+    session,
+    players: players.filter((p) => p.sessionId === session.id),
+    votes: votes.filter((v) => v.sessionId === session.id).map((v) => ({ voterId: v.voterId, targetId: v.targetId })),
+  }));
 }
 
 export async function getSession(groupId: string, sessionId: string): Promise<SessionWithPlayers | null> {
@@ -92,7 +106,7 @@ export async function lockInWindow(ctx: GameContext, userId: string, startMs: nu
   return { session, window, created: true };
 }
 
-export function upcomingPlanned(groupId: string, nowMs = Date.now()): Promise<SessionWithPlayers[]> {
+export function upcomingPlanned(groupId: string, nowMs = Date.now()): Promise<PlannedSession[]> {
   return findWithPlayers(
     () =>
       and(
@@ -191,6 +205,26 @@ export async function startLive(ctx: GroupContext, userId: string, nowMs = Date.
     .returning();
   await db.insert(playSessionPlayers).values({ sessionId: session.id, userId, status: "in" });
   return { sessionId: session.id, created: true, closed };
+}
+
+/**
+ * /lfg: always a fresh lobby. Every lobby that was still open closes (people tap I'm in again on the new post,
+ * so old taps from earlier in the evening don't linger). `closed` lists them with their posts, so each post
+ * can point to the new one.
+ */
+export async function startFreshLive(ctx: GroupContext, userId: string, nowMs = Date.now()) {
+  const db = await getDb();
+  const closed = await db
+    .update(playSessions)
+    .set({ status: "ended", endAt: new Date(nowMs) })
+    .where(and(eq(playSessions.groupId, ctx.group.id), eq(playSessions.kind, "live"), eq(playSessions.status, "active")))
+    .returning({ id: playSessions.id, discordMessageId: playSessions.discordMessageId });
+  const [session] = await db
+    .insert(playSessions)
+    .values({ groupId: ctx.group.id, kind: "live", startAt: new Date(nowMs), createdBy: userId })
+    .returning();
+  await db.insert(playSessionPlayers).values({ sessionId: session.id, userId, status: "in" });
+  return { sessionId: session.id, closed };
 }
 
 export async function setPlayerStatus(
@@ -308,6 +342,13 @@ export function summarizeLive(games: readonly GameView[], players: SessionPlayer
 /** Games at least one person in the lobby plays (playing or at a quick dinner), readiest first. */
 export const gamesInLobby = (summary: LiveSummary): GameProgress[] =>
   summary.games.filter((g) => g.playing.length + g.atDinner.length > 0);
+
+/** Smallest party that counts as a "stack" for DMs (Valorant, League): duos and 4-stacks don't DM anyone. */
+export const DM_STACK_SIZE = 5;
+
+/** Ids of the games with a full 5-stack playing in the lobby (compared before and after a tap, for DMs). */
+export const fullStacks = (summary: LiveSummary): string[] =>
+  summary.games.filter((g) => g.ready && g.game.partySize >= DM_STACK_SIZE).map((g) => g.game.id);
 
 /** One game's progress in the lobby: "✅ TFT 2/2", "Valorant 3/5", "Aion 2 3/4 (+1 at dinner)". */
 export const progressText = (g: GameProgress) =>

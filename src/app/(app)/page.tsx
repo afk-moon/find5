@@ -5,6 +5,7 @@ import { Avatar } from "@/components/Avatar";
 import { Heatmap } from "@/components/Heatmap";
 import { LateCheck } from "@/components/LateCheck";
 import { MemberName } from "@/components/LateTag";
+import { PartyCheck } from "@/components/PartyCheck";
 import { SessionPlan, TimelineBar, WindowCard } from "@/components/WindowCard";
 import { fmtDay, fmtDuration, fmtRange, fmtTime, zoneAbbr } from "@/lib/format";
 import { partyLabel } from "@/lib/games";
@@ -19,6 +20,7 @@ import {
   type GroupContext,
 } from "@/server/context";
 import { openLateVotes } from "@/server/lateness";
+import { partyOf } from "@/server/party";
 import { upcomingPlanned } from "@/server/sessions";
 import { membersNow, upcomingWindows, weekHeat, type MemberNow } from "@/server/windows";
 
@@ -108,7 +110,7 @@ export default async function WindowsPage({ searchParams }: { searchParams: Prom
         {planned.length > 0 && (
           <div className="space-y-2">
             <div className="label">Locked in</div>
-            {planned.map(({ session, players }) => {
+            {planned.map(({ session, players, votes }) => {
               const w = {
                 startMs: session.startAt.getTime(),
                 endMs: session.endAt!.getTime(),
@@ -117,6 +119,7 @@ export default async function WindowsPage({ searchParams }: { searchParams: Prom
               const started = w.startMs <= now;
               const late = lateChecks.get(session.id);
               const its = sessionGame(ctx, session);
+              const party = partyOf(ctx, session, players, votes, me.id, now);
               return (
                 <div key={session.id} className="card space-y-3 border-free/40">
                   <div className="flex flex-wrap items-center justify-between gap-2">
@@ -130,9 +133,9 @@ export default async function WindowsPage({ searchParams }: { searchParams: Prom
                       </div>
                     </div>
                     <div className="flex items-center gap-1">
-                      {players.map((p) => {
-                        const m = ctx.byId.get(p.userId);
-                        return m ? <Avatar key={p.userId} name={m.name} color={m.color} image={m.image} size={26} /> : null;
+                      {party.party.map((id) => {
+                        const m = ctx.byId.get(id);
+                        return m ? <Avatar key={id} name={m.name} color={m.color} image={m.image} size={26} /> : null;
                       })}
                       {!started && (
                         <ActionButton
@@ -147,6 +150,7 @@ export default async function WindowsPage({ searchParams }: { searchParams: Prom
                   </div>
                   <TimelineBar {...w} />
                   <SessionPlan ctx={its} w={w} zone={zone} />
+                  <PartyCheck ctx={ctx} party={party} partySize={its.game.partySize} viewerId={me.id} />
                   {late ? (
                     <LateCheck ctx={ctx} tally={late} viewerId={me.id} now={now} />
                   ) : (

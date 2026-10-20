@@ -15,8 +15,13 @@ export interface LateRecord extends SessionLateRecord {
   endMs: number | null;
 }
 
-/** Players who were actually in a session (not ones who declined or left). */
-const isPlaying = (status: string) => status !== "declined" && status !== "left";
+/**
+ * Players who count for a session's late check: everyone still in the party, plus anyone who dropped out or
+ * was voted out after it started (leaving late doesn't wipe a late report). People who were out before the
+ * start don't count.
+ */
+const countsForLate = (p: { status: string; updatedAt: Date }, startMs: number) =>
+  (p.status !== "declined" && p.status !== "left") || p.updatedAt.getTime() >= startMs;
 
 /** Locked-in sessions that have started (newest first), with their players and late reports. */
 export async function loadLateRecords(groupId: string, nowMs = Date.now(), limit = 200): Promise<LateRecord[]> {
@@ -40,7 +45,7 @@ export async function loadLateRecords(groupId: string, nowMs = Date.now(), limit
     sessionId: s.id,
     startMs: s.startAt.getTime(),
     endMs: s.endAt?.getTime() ?? null,
-    players: players.filter((p) => p.sessionId === s.id && isPlaying(p.status)).map((p) => p.userId),
+    players: players.filter((p) => p.sessionId === s.id && countsForLate(p, s.startAt.getTime())).map((p) => p.userId),
     reports: reports
       .filter((r) => r.sessionId === s.id)
       .map((r) => ({ reporterId: r.reporterId, lateUserId: r.lateUserId })),
@@ -98,7 +103,7 @@ export async function getLateTally(groupId: string, sessionId: string, viewerId:
     sessionId,
     startMs: s.startAt.getTime(),
     endMs: s.endAt?.getTime() ?? null,
-    players: players.filter((p) => isPlaying(p.status)).map((p) => p.userId),
+    players: players.filter((p) => countsForLate(p, s.startAt.getTime())).map((p) => p.userId),
     reports: reports.map((r) => ({ reporterId: r.reporterId, lateUserId: r.lateUserId })),
   };
   return { session: s, tally: tallyOf(record, viewerId, nowMs) };

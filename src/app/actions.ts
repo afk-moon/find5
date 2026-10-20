@@ -25,15 +25,18 @@ import { forGame, loadGroupContext, requireViewer, type GroupContext } from "@/s
 import { addGame, removeGame, setMemberGames, updateGame } from "@/server/games";
 import { toggleLateReport } from "@/server/lateness";
 import { announceLockIn, announceWfhDecision, syncLobby, syncPlannedMessage, syncWfhVote } from "@/server/notify";
+import { toggleDropOut, toggleKickVote } from "@/server/party";
 import { SESSION_COOKIE } from "@/server/session-cookie";
 import {
   cancelSession,
   endSession,
+  fullStacks,
   getSession,
   goToDinner,
   lockInWindow,
   setPlayerStatus,
   startLive,
+  summarizeLive,
 } from "@/server/sessions";
 import { clearBallot, closeVote, ensureVote, reopenVote, toggleBallotDay } from "@/server/wfh";
 
@@ -191,6 +194,33 @@ export async function toggleLateReportAction(sessionId: string, lateUserId: stri
   }
 }
 
+/** "Can't make it" on a locked-in session (tap again to rejoin). */
+export async function toggleDropOutAction(sessionId: string): Promise<ActionResult> {
+  const { ctx, userId } = await requireViewer();
+  try {
+    const { dropped } = await toggleDropOut(ctx, sessionId, userId);
+    await syncPlannedMessage(ctx, sessionId);
+    refreshAll();
+    return { ok: true, message: dropped ? "You're out of this one" : "You're back in 🎮" };
+  } catch (e) {
+    return actionError(e);
+  }
+}
+
+/** Vote to remove a teammate from a locked-in session's party (tap again to take it back). */
+export async function toggleKickVoteAction(sessionId: string, targetId: string): Promise<ActionResult> {
+  const { ctx, userId } = await requireViewer();
+  try {
+    const { voted, removed } = await toggleKickVote(ctx, sessionId, userId, targetId);
+    await syncPlannedMessage(ctx, sessionId);
+    refreshAll();
+    const name = ctx.byId.get(targetId)?.name ?? "They";
+    return { ok: true, message: removed ? `${name} was voted out` : voted ? "Vote counted" : "Vote taken back" };
+  } catch (e) {
+    return actionError(e);
+  }
+}
+
 // ─── Live lobby ────────────────────────────────────────────────────────────────────────────
 
 export async function startLfgAction(): Promise<ActionResult> {
@@ -212,6 +242,8 @@ export async function liveAction(sessionId: string, action: LiveAction): Promise
   try {
     const s = await getSession(ctx.group.id, sessionId);
     if (!s || s.session.status !== "active") throw new Error("That lobby is closed.");
+    // Full 5-stacks before this tap: people who asked for it get a DM when one fills.
+    const before = fullStacks(summarizeLive(ctx.games, s.players));
     switch (action) {
       case "in":
       case "back":
@@ -232,7 +264,7 @@ export async function liveAction(sessionId: string, action: LiveAction): Promise
         await endSession(ctx, sessionId);
         break;
     }
-    await syncLobby(ctx, sessionId);
+    await syncLobby(ctx, sessionId, { before, actorId: userId });
     refreshAll();
     return { ok: true };
   } catch (e) {

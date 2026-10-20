@@ -10,7 +10,7 @@ import {
 } from "@/engine";
 import { saveDateOverride } from "./availability";
 import { toEngineInput, type GroupContext } from "./context";
-import { activeLive, setPlayerStatus, upcomingPlanned } from "./sessions";
+import { activeLive, fullStacks, setPlayerStatus, summarizeLive, upcomingPlanned } from "./sessions";
 
 export interface AwayResult {
   /** When they said they'd be back (for "now", the start of this half hour). */
@@ -19,8 +19,8 @@ export interface AwayResult {
   now: boolean;
   /** How their availability changed. Null for "now" between 4am and 8am (no gaming day) or on vacation. */
   plan: AwayPlan | null;
-  /** The open lobby they were added to (its post needs a refresh). */
-  lobby: { sessionId: string } | null;
+  /** The open lobby they were added to, and its full 5-stacks before (for opt-in DMs when one fills). */
+  lobby: { sessionId: string; before: string[] } | null;
   /** Start of a locked-in session they're in that begins before they're back. */
   clashMs: number | null;
   /** Last day of the vacation they're on, when "now" left their availability alone because of it. */
@@ -74,8 +74,9 @@ export async function setAwayUntil(
 
   let lobby: AwayResult["lobby"] = null;
   if (live) {
+    const before = fullStacks(summarizeLive(ctx.games, live.players));
     await setPlayerStatus(ctx, live.session.id, userId, now ? "in" : "soon", now ? null : new Date(backMs));
-    lobby = { sessionId: live.session.id };
+    lobby = { sessionId: live.session.id, before };
   }
   const clash = now
     ? undefined

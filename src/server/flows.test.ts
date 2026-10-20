@@ -1,7 +1,7 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 // Throwaway embedded database (seeded with the demo group on first use).
 process.env.PGLITE_DIR = mkdtempSync(path.join(tmpdir(), "receptionist-flows-"));
@@ -22,15 +22,19 @@ const {
   lobbyCutoff,
   gamesInLobby,
   progressText,
+  fullStacks,
+  startFreshLive,
 } = await import("./sessions");
 const { getWfhState, toggleBallotDay, closeVote, reopenVote, weekStartOf } = await import("./wfh");
 const { saveProfile, saveDateOverride, createMember, saveWfhWeek, addVacation, removeVacation } = await import("./availability");
 const { openLateVotes, toggleLateReport, getLateTally } = await import("./lateness");
 const { setAwayUntil, resolveBackTime } = await import("./away");
-const { freeNowNotInLobby } = await import("./notify");
+const { freeNowNotInLobby, stackDms } = await import("./notify");
+const { getParty, toggleDropOut, toggleKickVote, kickVotesNeeded, partyOf } = await import("./party");
 const {
   lobbyMessage,
-  lobbyMovedMessage,
+  lobbyReplacedMessage,
+  stackReadyDm,
   wfhVoteMessage,
   plannedSessionMessage,
   windowsMessage,
@@ -211,7 +215,7 @@ describe("late reports", () => {
 
     const found = (await getLateTally(ctx.group.id, open.sessionId))!;
     expect(found.tally.mine).toEqual([]); // nobody else can see who reported
-    const msg = storedPlannedMessage(ctx, found.session, found.tally);
+    const msg = storedPlannedMessage(ctx, found.session, found.tally, (await getParty(ctx, open.sessionId))!.party);
     assertDiscordLimits(msg);
     expect(msg.content).toContain("counts as late");
 
@@ -359,7 +363,7 @@ describe("/back with a time", () => {
       .returning();
     try {
       const away = await setAwayUntil(ctx, "demo-rosa", "10:30pm", at("2031-03-04T19:00"));
-      expect(away.lobby).toEqual({ sessionId: lobby.id });
+      expect(away.lobby).toEqual({ sessionId: lobby.id, before: [] }); // no full 5-stack before (for DMs)
       let s = (await getSession(ctx.group.id, lobby.id))!;
       const summary = summarizeLive(ctx.games, s.players);
       expect(summary.soon).toEqual([{ id: "demo-rosa", backAt: at("2031-03-04T22:30") }]);
@@ -581,11 +585,11 @@ describe("old lobbies", () => {
     expect((await getSession(ctx.group.id, old.id))!.session.status).toBe("ended");
   });
 
-  it("an older post of a re-posted lobby points to the new one", () => {
-    const moved = lobbyMovedMessage("chan:new-msg", "guild");
-    expect(moved.content).toBe("↪️ This lobby moved to a newer post: https://discord.com/channels/guild/chan/new-msg");
-    expect(moved.components).toEqual([]);
-    expect(lobbyMovedMessage("chan:new-msg").content).toBe("↪️ This lobby moved to a newer post below.");
+  it("a lobby closed by a new /lfg points to the new one", () => {
+    const replaced = lobbyReplacedMessage("chan:new-msg", "guild");
+    expect(replaced.content).toBe("🏁 Lobby closed. A new one was opened: https://discord.com/channels/guild/chan/new-msg");
+    expect(replaced.components).toEqual([]);
+    expect(lobbyReplacedMessage("chan:new-msg").content).toBe("🏁 Lobby closed. A new one was opened below.");
   });
 });
 
@@ -722,7 +726,7 @@ describe("games", () => {
     }
   });
 
-  it("/lfg opens that one lobby, whatever the game", async () => {
+  it("/lfg always opens a new lobby for every game, and the old one closes", async () => {
     const opened = await handleInteraction({ ...base, type: 2, data: { name: "lfg" } }, () => {});
     try {
       expect(opened.type).toBe(4);
@@ -731,9 +735,21 @@ describe("games", () => {
       expect(opened.data!.content).toMatch(/^🎮 \*\*Who's on\?\*\* 1 in, Aion 2 needs 3 more\n/);
       expect(opened.data!.content).toContain("🎯 Aion 2 1/4 · Valorant 1/5 · League of Legends 1/5");
       assertDiscordLimits(opened.data!);
-      // A game sent by an older copy of the command doesn't matter: it's still the same lobby.
-      const again = await handleInteraction({ ...base, type: 2, data: { name: "lfg", options: [{ name: "game", value: "tft" }] } }, () => {});
+      const first = (await activeLive(ctx.group))!.session.id;
+      await setPlayerStatus(ctx, first, "demo-sam", "in");
+
+      // Again (even with a game from an older copy of the command): a new lobby with just Kai, and the old one closes.
+      const tasks: Array<() => Promise<unknown>> = [];
+      const again = await handleInteraction(
+        { ...base, type: 2, data: { name: "lfg", options: [{ name: "game", value: "tft" }] } },
+        (t) => tasks.push(t),
+      );
       expect(again.data!.content).toContain("1 in");
+      const live = (await activeLive(ctx.group))!;
+      expect(live.session.id).not.toBe(first);
+      expect(live.players.map((p) => p.userId)).toEqual(["demo-kai"]);
+      expect((await getSession(ctx.group.id, first))!.session.status).toBe("ended");
+      expect(tasks).toHaveLength(1); // remember the new post, and point the old one to it
     } finally {
       const live = await activeLive(ctx.group);
       if (live) await endSession(ctx, live.session.id);
@@ -760,5 +776,272 @@ describe("games", () => {
     expect((await ask("LEG")).data.choices).toEqual([
       { name: "League of Legends (5-stack) · 4 players", value: byName("League of Legends").id },
     ]);
+  });
+});
+
+describe("locked-in party", () => {
+  const ALL = ["demo-maya", "demo-dev", "demo-rosa", "demo-kai", "demo-sam"];
+  const made: string[] = [];
+  /** A Valorant session for the five, starting at `startMs`. */
+  async function plannedSession(startMs: number, minutes = 180) {
+    const db = await getDb();
+    const [session] = await db
+      .insert(playSessions)
+      .values({
+        groupId: ctx.group.id,
+        gameId: val().game.id,
+        kind: "planned",
+        startAt: new Date(startMs),
+        endAt: new Date(startMs + minutes * 60_000),
+        plan: { playMinutes: minutes, subs: 0, pauses: [] },
+        createdBy: "demo-kai",
+      })
+      .returning();
+    await db.insert(playSessionPlayers).values(ALL.map((userId) => ({ sessionId: session.id, userId, status: "in" as const })));
+    made.push(session.id);
+    return session;
+  }
+
+  beforeAll(async () => {
+    const db = await getDb();
+    for (const [userId, discordId] of [["demo-kai", "1001"], ["demo-sam", "1002"], ["demo-dev", "1003"]]) {
+      await db.update(memberProfiles).set({ discordId }).where(eq(memberProfiles.userId, userId));
+    }
+    ctx = await fresh();
+  });
+  afterAll(async () => {
+    // Cancelled sessions leave the lists and the late history.
+    const db = await getDb();
+    for (const id of made) await db.update(playSessions).set({ status: "cancelled" }).where(eq(playSessions.id, id));
+    await db.update(memberProfiles).set({ discordId: null }).where(eq(memberProfiles.userId, "demo-dev"));
+    ctx = await fresh();
+  });
+
+  it("needs 2 votes to remove someone, or 1 in a duo", () => {
+    expect([1, 2, 3, 4, 5, 6, 10].map(kickVotesNeeded)).toEqual([1, 1, 2, 2, 2, 3, 5]);
+  });
+
+  it("lets anyone drop out (and rejoin), and two teammates' votes remove someone", async () => {
+    const s = await plannedSession(Date.now() + 26 * 3_600_000);
+    const party = async (viewer: string | null = null) => (await getParty(ctx, s.id, viewer))!.party;
+    expect(await party()).toMatchObject({ party: ALL, dropped: [], removed: [], needed: 2, open: true });
+
+    // Kai can't make it, then can after all.
+    expect(await toggleDropOut(ctx, s.id, "demo-kai")).toMatchObject({ dropped: true, party: { dropped: ["demo-kai"] } });
+    expect((await party()).party).not.toContain("demo-kai");
+    expect(await toggleDropOut(ctx, s.id, "demo-kai")).toMatchObject({ dropped: false, party: { party: ALL, dropped: [] } });
+
+    // Only players vote, and only on other players.
+    const jordan = ctx.members.find((m) => m.name === "Jordan")!.id;
+    await expect(toggleKickVote(ctx, s.id, "demo-sam", "demo-sam")).rejects.toThrow(/yourself/);
+    await expect(toggleKickVote(ctx, s.id, jordan, "demo-sam")).rejects.toThrow(/Only players/);
+    await expect(toggleKickVote(ctx, s.id, "demo-maya", jordan)).rejects.toThrow(/not in the party/);
+    await expect(toggleDropOut(ctx, s.id, jordan)).rejects.toThrow(/not in this session/);
+
+    // One vote isn't enough and can be taken back; only the voter sees it was theirs.
+    const one = await toggleKickVote(ctx, s.id, "demo-maya", "demo-sam");
+    expect(one).toMatchObject({ voted: true, removed: false, party: { mine: ["demo-sam"] } });
+    expect(one.party.votes).toEqual({ "demo-sam": 1 });
+    expect((await party("demo-dev")).mine).toEqual([]);
+    const undo = await toggleKickVote(ctx, s.id, "demo-maya", "demo-sam");
+    expect(undo).toMatchObject({ voted: false, removed: false });
+    expect(undo.party.votes).toEqual({});
+
+    // A vote stops counting while its voter is out of the party.
+    await toggleKickVote(ctx, s.id, "demo-rosa", "demo-sam");
+    await toggleDropOut(ctx, s.id, "demo-rosa");
+    expect((await party()).votes).toEqual({});
+    await toggleDropOut(ctx, s.id, "demo-rosa");
+    expect((await party()).votes).toEqual({ "demo-sam": 1 });
+
+    // The second vote removes Sam, for good.
+    const out = await toggleKickVote(ctx, s.id, "demo-dev", "demo-sam");
+    expect(out).toMatchObject({ voted: true, removed: true, party: { party: ALL.filter((id) => id !== "demo-sam"), removed: ["demo-sam"] } });
+    expect(out.party.votes).toEqual({});
+    await expect(toggleDropOut(ctx, s.id, "demo-sam")).rejects.toThrow(/voted out/);
+    await expect(toggleKickVote(ctx, s.id, "demo-sam", "demo-kai")).rejects.toThrow(/Only players/);
+
+    // Nothing changes once it's over.
+    const after = s.endAt!.getTime() + 60_000;
+    expect((await getParty(ctx, s.id, null, after))!.party.open).toBe(false);
+    await expect(toggleDropOut(ctx, s.id, "demo-maya", after)).rejects.toThrow(/over/);
+    await expect(toggleKickVote(ctx, s.id, "demo-maya", "demo-kai", after)).rejects.toThrow(/over/);
+  });
+
+  it("keeps the bar from the party that locked in, so drop-outs don't lower it", async () => {
+    const s = await plannedSession(Date.now() + 27 * 3_600_000);
+    const p = (userId: string, status: "in" | "declined") => ({ sessionId: s.id, userId, status, backAt: null, updatedAt: new Date() });
+    const trio = partyOf(ctx, s, [p("demo-rosa", "declined"), p("demo-dev", "in"), p("demo-maya", "in")], [{ voterId: "demo-maya", targetId: "demo-dev" }], null);
+    expect(trio).toMatchObject({ party: ["demo-maya", "demo-dev"], dropped: ["demo-rosa"], needed: 2 }); // member order
+    expect(trio.votes).toEqual({ "demo-dev": 1 });
+  });
+
+  it("shows the party on the post: who's out, open votes, and buttons until it ends", async () => {
+    const s = await plannedSession(Date.now() + 74 * 3_600_000);
+    await toggleDropOut(ctx, s.id, "demo-kai");
+    await toggleKickVote(ctx, s.id, "demo-maya", "demo-sam");
+    await toggleKickVote(ctx, s.id, "demo-dev", "demo-sam");
+    await toggleKickVote(ctx, s.id, "demo-maya", "demo-rosa");
+    const late = (await getLateTally(ctx.group.id, s.id))!;
+    const msg = storedPlannedMessage(ctx, late.session, late.tally, (await getParty(ctx, s.id))!.party);
+    expect(msg.content).toContain("(3/5, need 2 more)");
+    expect(msg.content).toContain(`🙅 Can't make it: ${mention(ctx.byId.get("demo-kai"))}`);
+    expect(msg.content).toContain(`🚪 Voted out: ${mention(ctx.byId.get("demo-sam"))}`);
+    expect(msg.content).toContain("🗳️ Votes to remove: **Rosa** 1/2");
+    expect(msg.components!.at(-1)!.components.map((b) => b.custom_id)).toEqual([`drop:${s.id}`, `kickmenu:${s.id}`]);
+    assertDiscordLimits(msg);
+
+    const over = (await getParty(ctx, s.id, null, s.endAt!.getTime() + 1))!.party;
+    const ended = storedPlannedMessage(ctx, late.session, late.tally, over);
+    expect(ended.components!.flatMap((r) => r.components.map((b) => b.custom_id))).not.toContain(`drop:${s.id}`);
+    expect(ended.content).not.toContain("Votes to remove");
+  });
+
+  it("late check: dropping out before the start takes you out of it, after the start doesn't", async () => {
+    const start = Date.now() - 30 * 60_000;
+    const s = await plannedSession(start);
+    await toggleDropOut(ctx, s.id, "demo-dev", start - 10 * 60_000); // said so before it started
+    await toggleDropOut(ctx, s.id, "demo-rosa", start + 10 * 60_000); // bailed after the start
+    const { tally } = (await getLateTally(ctx.group.id, s.id))!;
+    expect(tally.voting).toBe("open");
+    expect([...tally.players].sort()).toEqual(["demo-kai", "demo-maya", "demo-rosa", "demo-sam"]);
+    expect((await toggleLateReport(ctx, s.id, "demo-maya", "demo-rosa")).reported).toBe(true);
+    await expect(toggleLateReport(ctx, s.id, "demo-maya", "demo-dev")).rejects.toThrow(/weren't in/);
+  });
+
+  it("works from Discord: Can't make it, and a private picker to vote someone out", async () => {
+    const s = await plannedSession(Date.now() + 50 * 3_600_000);
+    const click = async (customId: string, discordId = "1001") => {
+      const tasks: Array<() => Promise<unknown>> = [];
+      const res = await handleInteraction(
+        {
+          id: "1",
+          application_id: "app",
+          type: 3,
+          token: "t",
+          channel_id: "chan",
+          member: { user: { id: discordId, username: discordId } },
+          data: { custom_id: customId },
+          message: { id: "msg", channel_id: "chan" },
+        },
+        (t) => tasks.push(t),
+      );
+      return { ...res, tasks };
+    };
+    const ids = (msg: { components?: Array<{ components: Array<{ custom_id?: string }> }> }) =>
+      (msg.components ?? []).flatMap((r) => r.components.map((b) => b.custom_id));
+
+    const out = await click(`drop:${s.id}`);
+    expect(out.type).toBe(7); // edits the post in place
+    expect(out.data!.content).toContain(`🙅 Can't make it: ${mention(ctx.byId.get("demo-kai"))}`);
+    expect(out.data!.content).toContain("(4/5, need 1 more)");
+    expect(out.tasks).toHaveLength(1); // the private "you're out" note
+    assertDiscordLimits(out.data!);
+
+    const outsider = await click(`kickmenu:${s.id}`);
+    expect(outsider).toMatchObject({ type: 4, data: { flags: 64 } });
+    expect(outsider.data!.content).toMatch(/Only players/);
+    expect((await click(`drop:${s.id}`)).data!.content).not.toContain("Can't make it:"); // back in
+
+    const menu = await click(`kickmenu:${s.id}`);
+    expect(menu).toMatchObject({ type: 4, data: { flags: 64 } }); // only Kai sees it
+    expect(ids(menu.data!)).toEqual(["demo-maya", "demo-dev", "demo-rosa", "demo-sam"].map((id) => `kick:${s.id}:${id}`));
+    assertDiscordLimits(menu.data!);
+
+    const vote = await click(`kick:${s.id}:demo-sam`);
+    expect(vote.type).toBe(7); // updates the private picker
+    expect(vote.data!.flags).toBeUndefined();
+    expect(vote.data!.content).toContain("You voted to remove **Sam** (1 of 2)");
+    expect(vote.data!.components![0].components.find((b) => b.custom_id === `kick:${s.id}:demo-sam`)!.label).toBe("✓ Sam · 1/2");
+    expect(vote.tasks).toHaveLength(1); // refresh the shared post
+
+    const self = await click(`kick:${s.id}:demo-sam`, "1002");
+    expect(self).toMatchObject({ type: 4, data: { flags: 64 } });
+    expect(self.data!.content).toMatch(/yourself/);
+
+    const second = await click(`kick:${s.id}:demo-sam`, "1003"); // Dev
+    expect(second.data!.content).toContain("🚪 **Sam** was voted out.");
+    expect(ids(second.data!)).not.toContain(`kick:${s.id}:demo-sam`);
+  });
+});
+
+describe("opt-in DMs when a 5-stack fills", () => {
+  const OPTED = ["demo-maya", "demo-kai", "demo-sam"]; // Maya hasn't logged in with Discord
+  const optIn = async (on: boolean) => {
+    const db = await getDb();
+    for (const id of OPTED) await db.update(memberProfiles).set({ dmWhenFull: on }).where(eq(memberProfiles.userId, id));
+    ctx = await fresh();
+  };
+  beforeAll(async () => {
+    const db = await getDb();
+    await db.update(memberProfiles).set({ discordId: "1001" }).where(eq(memberProfiles.userId, "demo-kai"));
+    await db.update(memberProfiles).set({ discordId: "1002" }).where(eq(memberProfiles.userId, "demo-sam"));
+    await optIn(true);
+  });
+  afterAll(() => optIn(false));
+
+  it("go to people in the lobby who play that game and asked for one, but not whoever tapped", async () => {
+    const { sessionId } = await startFreshLive(ctx, "demo-maya");
+    try {
+      for (const id of ["demo-dev", "demo-rosa", "demo-kai"]) await setPlayerStatus(ctx, sessionId, id, "in");
+      let s = (await getSession(ctx.group.id, sessionId))!;
+      const before = fullStacks(summarizeLive(ctx.games, s.players));
+      expect(before).toEqual([]); // TFT's ready, but duos don't count
+      await setPlayerStatus(ctx, sessionId, "demo-sam", "in"); // the fifth Valorant player
+      s = (await getSession(ctx.group.id, sessionId))!;
+
+      const dms = stackDms(ctx, s.players, { before, actorId: "demo-sam" });
+      expect(dms.map((d) => [d.userId, d.discordId, d.game.game.name])).toEqual([["demo-kai", "1001", "Valorant"]]);
+      expect(stackDms(ctx, s.players, { before }).map((d) => d.userId).sort()).toEqual(["demo-kai", "demo-sam"]);
+      expect(stackDms(ctx, s.players, { before: fullStacks(summarizeLive(ctx.games, s.players)) })).toEqual([]); // nothing new
+
+      const dm = stackReadyDm(ctx, dms[0].game, "https://discord.com/channels/g/c/m");
+      expect(dm.content).toContain("🎮 **Valorant 5-stack is ready:** Maya, Dev, Rosa, Kai, Sam. Hop in voice!");
+      expect(dm.content).toContain("Lobby: https://discord.com/channels/g/c/m");
+      expect(dm.allowed_mentions).toEqual({ parse: [] });
+    } finally {
+      await endSession(ctx, sessionId);
+    }
+  });
+
+  it("are queued by the tap that fills a 5-stack, and only that one", async () => {
+    const { sessionId } = await startFreshLive(ctx, "demo-maya");
+    const tap = async (discordId: string) => {
+      const tasks: Array<() => Promise<unknown>> = [];
+      const res = await handleInteraction(
+        {
+          id: "1",
+          application_id: "app",
+          type: 3,
+          token: "t",
+          channel_id: "chan",
+          member: { user: { id: discordId, username: discordId } },
+          data: { custom_id: `lfg:in:${sessionId}` },
+        },
+        (t) => tasks.push(t),
+      );
+      expect(res.type).toBe(7);
+      return tasks;
+    };
+    try {
+      for (const id of ["demo-dev", "demo-rosa"]) await setPlayerStatus(ctx, sessionId, id, "in");
+      expect(await tap("1001")).toHaveLength(0); // Kai: Valorant 4/5
+      expect(await tap("1002")).toHaveLength(1); // Sam fills it: Kai gets a DM
+      expect(await tap("1002")).toHaveLength(0); // already full
+    } finally {
+      await endSession(ctx, sessionId);
+    }
+  });
+
+  it("are switched on in the profile, and saving without the box keeps the choice", async () => {
+    const dev = { timezone: "America/Denver", workStyle: "hybrid" as const, nightBeforeWfhUntil: "00:30", hybridDays: { 1: "flex" as const, 5: "wfh" as const } };
+    const dmOf = async () => (await fresh()).byId.get("demo-dev")!.dmWhenFull;
+    expect(await dmOf()).toBe(false);
+    await saveProfile("demo-dev", { ...dev, dmWhenFull: true });
+    expect(await dmOf()).toBe(true);
+    await saveProfile("demo-dev", dev);
+    expect(await dmOf()).toBe(true);
+    await saveProfile("demo-dev", { ...dev, dmWhenFull: false });
+    expect(await dmOf()).toBe(false);
   });
 });

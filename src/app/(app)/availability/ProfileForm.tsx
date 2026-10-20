@@ -33,6 +33,10 @@ export interface ProfileValues {
   workStyle: "fixed" | "hybrid";
   nightBeforeWfhUntil: string | null;
   hybridDays: Partial<Record<Weekday5, HybridMode>>;
+  /** DM me on Discord when a lobby I'm in fills a 5-stack. */
+  dmWhenFull: boolean;
+  /** Logged in with Discord (the bot can only DM people it knows). */
+  hasDiscord: boolean;
 }
 
 export function ProfileForm({ profile }: { profile: ProfileValues }) {
@@ -42,6 +46,7 @@ export function ProfileForm({ profile }: { profile: ProfileValues }) {
   const [workStyle, setWorkStyle] = useState(profile.workStyle);
   const [night, setNight] = useState(profile.nightBeforeWfhUntil ?? "");
   const [days, setDays] = useState<Partial<Record<Weekday5, HybridMode>>>(profile.hybridDays);
+  const [dm, setDm] = useState(profile.dmWhenFull);
   const [result, setResult] = useState<ActionResult | null>(null);
   const [pending, startTransition] = useTransition();
 
@@ -57,6 +62,7 @@ export function ProfileForm({ profile }: { profile: ProfileValues }) {
         workStyle,
         nightBeforeWfhUntil: night || null,
         hybridDays: workStyle === "hybrid" ? days : {},
+        dmWhenFull: dm,
       });
       setResult(r);
       if (r.ok) router.refresh();
@@ -132,6 +138,24 @@ export function ProfileForm({ profile }: { profile: ProfileValues }) {
           </label>
         </>
       )}
+
+      <label className={`flex items-start gap-2 text-sm ${profile.hasDiscord ? "cursor-pointer" : "opacity-60"}`}>
+        <input
+          type="checkbox"
+          className="mt-0.5 h-4 w-4 accent-val"
+          checked={dm}
+          disabled={!profile.hasDiscord}
+          onChange={(e) => setDm(e.target.checked)}
+        />
+        <span>
+          <span className="font-semibold">📩 DM me when a 5-stack fills</span>
+          <span className="block text-xs text-muted">
+            {profile.hasDiscord
+              ? "When you're in the lobby and it fills a 5-stack for a game you play, the bot DMs you on Discord. Handy if the server's muted. Discord has to allow DMs from server members."
+              : "Log in with Discord once to turn this on."}
+          </span>
+        </span>
+      </label>
 
       <div className="flex items-center gap-3">
         <button className="btn btn-primary" disabled={pending} onClick={save}>

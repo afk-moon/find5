@@ -7,21 +7,24 @@ import { partyLabel } from "@/lib/games";
 import { setAwayUntil } from "@/server/away";
 import { findGame, forGame, gamesOf, loadGroupContext, type GameView, type GroupContext, type MemberView } from "@/server/context";
 import { getLateTally, toggleLateReport } from "@/server/lateness";
-import { freeNowNotInLobby, markLobbyMoved, syncLobby } from "@/server/notify";
+import { freeNowNotInLobby, markLobbyReplaced, sendStackDms, stackDms, syncLobby, syncPlannedMessage } from "@/server/notify";
+import { getParty, toggleDropOut, toggleKickVote } from "@/server/party";
 import {
   activeLive,
   endSession,
+  fullStacks,
   getSession,
   goToDinner,
   lobbyExpired,
   setPlayerStatus,
-  startLive,
+  startFreshLive,
   summarizeLive,
 } from "@/server/sessions";
 import { clearBallot, ensureVote, getWfhState, toggleBallotDay, weekStartOf } from "@/server/wfh";
 import { upcomingWindows } from "@/server/windows";
 import {
   awayMessage,
+  kickPickerMessage,
   lobbyMessage,
   storedPlannedMessage,
   windowsMessage,
@@ -111,13 +114,18 @@ async function groupFor(i: Interaction): Promise<GroupContext | null> {
   return loadGroupContext(group.id);
 }
 
-/** After replying, look up the reply's message id so the web app can edit it later. */
+/** After replying, look up the reply's message ("channelId:messageId") so the web app can edit it later. */
+async function replyRef(i: Interaction): Promise<string | null> {
+  const res = await fetch(`https://discord.com/api/v10/webhooks/${i.application_id}/${i.token}/messages/@original`);
+  if (!res.ok) return null;
+  const msg = (await res.json()) as { id: string; channel_id: string };
+  return `${msg.channel_id}:${msg.id}`;
+}
+
 function rememberReply(i: Interaction, save: (ref: string) => Promise<unknown>) {
   return async () => {
-    const res = await fetch(`https://discord.com/api/v10/webhooks/${i.application_id}/${i.token}/messages/@original`);
-    if (!res.ok) return;
-    const msg = (await res.json()) as { id: string; channel_id: string };
-    await save(`${msg.channel_id}:${msg.id}`);
+    const ref = await replyRef(i);
+    if (ref) await save(ref);
   };
 }
 
@@ -160,21 +168,21 @@ async function onCommand(i: Interaction, ctx: GroupContext, me: MemberView, defe
     }
 
     case "lfg": {
-      // One lobby for every game: whoever's in decides what to play, and the post shows which games are ready.
-      const { sessionId, created, closed } = await startLive(ctx, me.id);
+      // Always a fresh lobby (for every game): whatever was open closes, and everyone taps I'm in again.
+      const { sessionId, closed } = await startFreshLive(ctx, me.id);
       const s = (await getSession(ctx.group.id, sessionId))!;
       const freeNow = freeNowNotInLobby(ctx, s.players.map((p) => p.userId));
-      // Lobbies that expired (like last night's) were just closed: show that on their posts.
-      for (const id of closed) defer(() => syncLobby(ctx, id));
-      // This reply becomes the lobby message that button clicks and the web app keep updated. If the lobby was
-      // already open, its older post becomes a pointer to this one, so only one post has buttons.
-      const previous = created ? null : s.session.discordMessageId;
-      defer(
-        rememberReply(i, async (ref) => {
-          await db.update(playSessions).set({ discordMessageId: ref }).where(eq(playSessions.id, sessionId));
-          if (previous && previous !== ref) await markLobbyMoved(previous, ref, i.guild_id);
-        }),
-      );
+      // This reply becomes the lobby message that button clicks and the web app keep updated. The closed
+      // lobbies' posts lose their buttons and point to it (or just say they're closed, if it can't be found).
+      defer(async () => {
+        const ref = await replyRef(i);
+        if (ref) await db.update(playSessions).set({ discordMessageId: ref }).where(eq(playSessions.id, sessionId));
+        for (const old of closed) {
+          if (!old.discordMessageId) continue;
+          if (ref) await markLobbyReplaced(old.discordMessageId, ref, i.guild_id);
+          else await syncLobby(ctx, old.id);
+        }
+      });
       return reply(lobbyMessage(ctx, s.session, summarizeLive(ctx.games, s.players), freeNow));
     }
 
@@ -186,7 +194,7 @@ async function onCommand(i: Interaction, ctx: GroupContext, me: MemberView, defe
       if (time) {
         const away = await setAwayUntil(ctx, me.id, time);
         const lobby = away.lobby;
-        if (lobby) defer(() => syncLobby(ctx, lobby.sessionId));
+        if (lobby) defer(() => syncLobby(ctx, lobby.sessionId, { before: lobby.before, actorId: me.id }));
         return ephemeral(awayMessage(away, me.timezone, appUrl()));
       }
       // The time is required on /back now, so a /back without one comes from Discord's old copy of the
@@ -196,10 +204,11 @@ async function onCommand(i: Interaction, ctx: GroupContext, me: MemberView, defe
         "the app). If the time box still doesn't appear, run `npm run discord:register` again.";
       const live = await activeLive(ctx.group);
       if (!live) return ephemeral(i.data?.name === "back" ? `⚠️ ${stale}` : "No lobby is open. Start one with /lfg.");
+      const before = fullStacks(summarizeLive(ctx.games, live.players));
       const kind = option("kind") === "long" ? "long" : "quick";
       if (i.data?.name === "dinner") await goToDinner(ctx, live.session.id, me.id, kind);
       else await setPlayerStatus(ctx, live.session.id, me.id, "in");
-      defer(() => syncLobby(ctx, live.session.id));
+      defer(() => syncLobby(ctx, live.session.id, { before, actorId: me.id }));
       if (i.data?.name === "back") return ephemeral(`Welcome back! 🎮\n-# Meant to give a time? ${stale}`);
       return ephemeral(
         kind === "quick"
@@ -238,6 +247,7 @@ async function onButton(i: Interaction, ctx: GroupContext, me: MemberView, defer
       whisper("That lobby is closed. Start a new one with /lfg.");
       return update(lobbyMessage(ctx, s.session, summarizeLive(ctx.games, s.players), []));
     }
+    const before = fullStacks(summarizeLive(ctx.games, s.players));
     switch (action) {
       case "in":
       case "back":
@@ -259,10 +269,15 @@ async function onButton(i: Interaction, ctx: GroupContext, me: MemberView, defer
     }
     const fresh = (await getSession(ctx.group.id, sessionId))!;
     const summary = summarizeLive(ctx.games, fresh.players);
-    if (!fresh.session.discordMessageId && i.message) {
+    let lobbyRef = fresh.session.discordMessageId;
+    if (!lobbyRef && i.message) {
       const ref = `${i.message.channel_id}:${i.message.id}`;
+      lobbyRef = ref;
       defer(() => getDb().then((db) => db.update(playSessions).set({ discordMessageId: ref }).where(eq(playSessions.id, sessionId))));
     }
+    // People who asked for it get a DM when a 5-stack fills (no ping in the channel).
+    const dms = stackDms(ctx, fresh.players, { before, actorId: me.id });
+    if (dms.length) defer(() => sendStackDms(ctx, lobbyRef, dms));
     // Keep "Free right now": whoever's free by their schedule and still hasn't answered.
     const freeNow = freeNowNotInLobby(ctx, fresh.players.map((p) => p.userId));
     return update(lobbyMessage(ctx, fresh.session, summary, freeNow));
@@ -276,11 +291,48 @@ async function onButton(i: Interaction, ctx: GroupContext, me: MemberView, defer
     return update(wfhVoteMessage(ctx, await getWfhState(ctx, weekStart), appUrl()));
   }
 
+  // Locked-in posts: "Can't make it" (tap again to rejoin).
+  if (kind === "drop") {
+    const sessionId = a;
+    const result = await toggleDropOut(ctx, sessionId, me.id);
+    const late = (await getLateTally(ctx.group.id, sessionId, me.id))!;
+    if (late.session.discordEventId) defer(() => syncPlannedMessage(ctx, sessionId)); // refreshes the server event too
+    whisper(
+      result.dropped
+        ? "🙅 You're out of this session. Changed your mind? Tap “Can't make it” again to rejoin."
+        : "✅ You're back in the party.",
+    );
+    return update(storedPlannedMessage(ctx, late.session, late.tally, result.party));
+  }
+
+  // Locked-in posts: "Vote someone out" opens a private picker with a button per teammate.
+  if (kind === "kickmenu") {
+    const found = await getParty(ctx, a, me.id);
+    if (!found || !found.party.open) return ephemeral("This session is over.");
+    if (!found.party.party.includes(me.id)) return ephemeral("Only players in this session can vote someone out.");
+    return { type: 4, data: { ...kickPickerMessage(ctx, found.party, me.id), flags: EPHEMERAL } };
+  }
+
+  // A vote from that private picker: update the picker, and the shared post shows the new count.
+  if (kind === "kick") {
+    const sessionId = a;
+    const targetId = b;
+    const result = await toggleKickVote(ctx, sessionId, me.id, targetId);
+    defer(() => syncPlannedMessage(ctx, sessionId));
+    const name = ctx.byId.get(targetId)?.name ?? "them";
+    const note = result.removed
+      ? `🚪 **${name}** was voted out.`
+      : result.voted
+        ? `🗳️ You voted to remove **${name}** (${result.party.votes[targetId] ?? 0} of ${result.party.needed}).`
+        : `↩️ Took back your vote for **${name}**.`;
+    return update(kickPickerMessage(ctx, result.party, me.id, note));
+  }
+
   if (kind === "late") {
     const sessionId = a;
     const lateUserId = b;
-    const found = await getLateTally(ctx.group.id, sessionId, me.id);
-    if (!found) return ephemeral("That session isn't available anymore.");
+    const [found, party] = await Promise.all([getLateTally(ctx.group.id, sessionId, me.id), getParty(ctx, sessionId, me.id)]);
+    if (!found || !party) return ephemeral("That session isn't available anymore.");
     if (found.tally.voting === "not-started") {
       return ephemeral(`⏰ Late reports open when the session starts (${discordTs(found.tally.startMs, "R")}).`);
     }
@@ -292,7 +344,7 @@ async function onButton(i: Interaction, ctx: GroupContext, me: MemberView, defer
     // The shared message only ever shows counts; the clicker gets a private confirmation.
     if (found.tally.voting === "closed") {
       whisper("Late reports for this session are closed.");
-      return update(storedPlannedMessage(ctx, found.session, found.tally)); // shows the result and drops the buttons
+      return update(storedPlannedMessage(ctx, found.session, found.tally, party.party)); // shows the result and drops the buttons
     }
     const { reported, tally } = await toggleLateReport(ctx, sessionId, me.id, lateUserId);
     const name = ctx.byId.get(lateUserId)?.name ?? "them";
@@ -302,7 +354,7 @@ async function onButton(i: Interaction, ctx: GroupContext, me: MemberView, defer
         ? `⏰ You reported **${name}** as late (${n} of ${tally.needed} reports needed${n >= tally.needed ? ", so it counts" : ""}). Only you can see this. Tap again to undo.`
         : `↩️ Took back your late report for **${name}**.`,
     );
-    return update(storedPlannedMessage(ctx, found.session, tally));
+    return update(storedPlannedMessage(ctx, found.session, tally, party.party));
   }
 
   return ephemeral("Unknown button.");

@@ -15,8 +15,12 @@ line up their work-from-home days. It's a web app plus an optional Discord bot.
 - **Live lobby:** “who's on right now?” with I'm in / in 15 min / dinner / back. There's one lobby for
   every game, and it shows which games the people in it can play (✅ TFT 2/2 · Valorant 3/5). A lobby
   closes at 4am (group time) or after 12 hours, and its Discord post switches to “Lobby closed” without
-  buttons, so an old post never looks open. Posting `/lfg` again while a lobby is open moves it to the new
-  post.
+  buttons, so an old post never looks open. Every `/lfg` starts a fresh lobby: the open one closes and
+  everyone taps I'm in again.
+- **DM when a 5-stack fills:** muted the server? Tick 📩 under **My availability → Profile** and the bot DMs
+  you when a lobby you're in fills a 5-stack for a game you play.
+- **Can't make it / vote out:** on a locked-in session, anyone can tap 🙅 **Can't make it**, and teammates
+  can vote out someone who's late or not coming (2 votes; 1 in a duo).
 - **Late reports:** once a locked-in session starts, teammates can report who was late. Anyone late in
   more than half of their last 10 sessions gets a ⏰ **Frequently late** tag next to their name.
 - **Discord:** login, slash commands, lobby buttons, announcements, and Scheduled Events.
@@ -220,6 +224,23 @@ before games existed play Valorant; new members pick their own.
 game: it pings whoever is free right now, and as people join it shows each game's progress among them
 (✅ TFT 2/2, Valorant 3/5…), so you can see what's ready to play. It also tracks quick and long dinners with
 “back in…” countdowns; a quick dinner pauses the games that person is needed for.
+- Every `/lfg` opens a new lobby. The one that was open closes, and its post points to the new one, so
+  taps from earlier in the evening don't linger. (The Live page's **Start LFG** only shows when no lobby
+  is open.)
+- Nobody gets pinged when a game fills; the post just updates. People who mute the server can tick
+  **📩 DM me when a 5-stack fills** under **My availability → Profile**: when a lobby they're in fills a
+  5-stack (Valorant, League…) for a game they play, the bot DMs them a link. Whoever's tap filled it doesn't
+  get one. Duos and 4-stacks don't send DMs.
+
+**Can't make it / vote out.** On a locked-in session (its card on the Windows page, or its Discord post):
+- 🙅 **Can't make it** takes you out of the party. Tap again to rejoin, any time until the session ends.
+- 🗳️ **Vote someone out** if a teammate is late or isn't coming. It takes 2 votes (1 in a duo; half of the
+  others in parties over 5), counted from the party that locked in, so people dropping out don't lower it.
+  Votes are anonymous and can be taken back. Someone voted out can't rejoin that session.
+- The post shows who's still in (“4/5, need 1 more”), who can't make it, who was voted out, and open votes.
+  In Discord, the vote buttons open in a private picker that only you see.
+- Leaving before the start takes you out of the late check; leaving after it doesn't, so dropping out
+  can't wipe a late report.
 
 **Late reports.** These work on locked-in sessions, from the Windows page or the buttons on the
 session's Discord post.
@@ -273,7 +294,7 @@ Commands:
 
 - `/windows`: best times this week for the games you play. `/windows game: TFT` shows just one game
   (start typing and pick it from the list).
-- `/lfg`: open the lobby (or join the open one), for any game. It pings whoever's free and shows which
+- `/lfg`: open a new lobby, for any game (the open one closes). It pings whoever's free and shows which
   games the people who join can play.
 - `/dinner quick|long`
 - `/back 930` (or `9pm`, `21:30`, `noon`): you're away until then. Your availability for today changes to
@@ -294,6 +315,12 @@ in Discord, reload it (Ctrl+R, or restart the phone app). If it warns that older
 Locking in a window posts the plan and creates a Discord Scheduled Event; Discord notifies everyone who
 taps “Interested”. The post also has a “*name* was late” button for each player. These work once the
 session starts: the post shows only the counts, and the person who tapped gets a private confirmation.
+It also has 🙅 **Can't make it** and 🗳️ **Vote someone out** buttons, and the event's party list follows
+along until the session starts.
+
+DMs (for people who tick 📩 in their profile) need no extra bot permission. Discord only delivers them if
+that person allows DMs from members of your server (right-click the server → Privacy Settings → Direct
+Messages); if not, the DM is skipped.
 
 ---
 

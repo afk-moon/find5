@@ -77,6 +77,8 @@ export default async function AvailabilityPage() {
               workStyle: me.workStyle,
               nightBeforeWfhUntil: me.nightBeforeWfhUntil,
               hybridDays: me.hybridDays,
+              dmWhenFull: me.dmWhenFull,
+              hasDiscord: !!me.discordId,
             }}
           />
         </div>

@@ -35,6 +35,8 @@ export interface MemberView {
   workStyle: "fixed" | "hybrid";
   role: "owner" | "member";
   discordId: string | null;
+  /** Wants a Discord DM when a lobby they are in gets a full 5-stack. */
+  dmWhenFull: boolean;
   nightBeforeWfhUntil: string | null;
   hybridDays: Partial<Record<Weekday, HybridMode>>;
   /** Raw stored patterns by key ("w1"…"w7", "wfh", "d:YYYY-MM-DD"). */
@@ -163,6 +165,7 @@ export async function loadGroupContext(groupId: string): Promise<GroupContext> {
           workStyle: memberProfiles.workStyle,
           color: memberProfiles.color,
           discordId: memberProfiles.discordId,
+          dmWhenFull: memberProfiles.dmWhenFull,
           nightBeforeWfhUntil: memberProfiles.nightBeforeWfhUntil,
         })
         .from(memberships)
@@ -192,6 +195,7 @@ export async function loadGroupContext(groupId: string): Promise<GroupContext> {
       timezone: r.timezone ?? group.homeTimezone,
       workStyle: hybrid ? "hybrid" : "fixed",
       discordId: r.discordId ?? null,
+      dmWhenFull: r.dmWhenFull ?? false,
       nightBeforeWfhUntil: r.nightBeforeWfhUntil ?? null,
       hybridDays: Object.fromEntries(
         hybridRows.filter((h) => h.userId === r.id).map((h) => [h.weekday, h.mode]),

@@ -14,7 +14,8 @@ import { partyLabel } from "@/lib/games";
 import type { AwayResult } from "@/server/away";
 import { mainGame, sessionGame, type GameContext, type GameView, type GroupContext, type MemberView } from "@/server/context";
 import type { LateTally } from "@/server/lateness";
-import { gamesInLobby, progressText, type LiveSummary, type PlaySession } from "@/server/sessions";
+import type { PartyState } from "@/server/party";
+import { gamesInLobby, progressText, type GameProgress, type LiveSummary, type PlaySession } from "@/server/sessions";
 import type { WfhState } from "@/server/wfh";
 import type { ActionRow, Button, DiscordMessage } from "./rest";
 
@@ -105,11 +106,28 @@ function lateSection(ctx: GroupContext, late: LateTally): { lines: string[]; row
   return { lines, rows };
 }
 
+/** Party lines for a locked-in post: who's in (and how many short), who's out, and open votes to remove someone. */
+function partySection(ctx: GameContext, members: readonly string[], party: PartyState | null | undefined): string[] {
+  const nameOf = (id: string) => ctx.byId.get(id)?.name ?? "someone";
+  const P = ctx.game.partySize;
+  const short = members.length < P ? ` (${members.length}/${P}, need ${P - members.length} more)` : "";
+  const lines = [`Party: ${members.length ? names(ctx, members) : "nobody yet"}${short}`];
+  if (party?.dropped.length) lines.push(`🙅 Can't make it: ${names(ctx, party.dropped)}`);
+  if (party?.removed.length) lines.push(`🚪 Voted out: ${names(ctx, party.removed)}`);
+  const pending = party?.open ? Object.entries(party.votes).filter(([, n]) => n > 0) : [];
+  if (party && pending.length) {
+    lines.push(`🗳️ Votes to remove: ${pending.map(([id, n]) => `**${nameOf(id)}** ${n}/${party.needed}`).join(", ")}`);
+  }
+  return lines;
+}
+
 export function plannedSessionMessage(
   ctx: GameContext,
   s: { startMs: number; endMs: number; pauses: Pause[]; party: string[] },
   late?: LateTally | null,
+  party?: PartyState | null,
 ): DiscordMessage {
+  const members = party?.party ?? s.party;
   const lines = sessionTimeline(s, ctx.game.matchMinutes).flatMap((e) => {
     switch (e.kind) {
       case "start":
@@ -125,30 +143,70 @@ export function plannedSessionMessage(
     }
   });
   const lateBits = late ? lateSection(ctx, late) : { lines: [], rows: [] };
+  // Discord allows 5 rows of buttons: late buttons get up to 4, and the party buttons the last one.
+  const rows = lateBits.rows.slice(0, party?.open ? 4 : 5);
+  if (party?.open) {
+    rows.push({
+      type: 1,
+      components: [
+        { type: 2, style: 2, label: "Can't make it", emoji: { name: "🙅" }, custom_id: `drop:${party.sessionId}` },
+        { type: 2, style: 2, label: "Vote someone out", emoji: { name: "🗳️" }, custom_id: `kickmenu:${party.sessionId}` },
+      ],
+    });
+  }
   return {
     content: [
       `🔒 **Locked in: ${ctx.game.name}** ${discordTs(s.startMs, "F")} (${discordTs(s.startMs, "R")})`,
-      `Party: ${names(ctx, s.party)}`,
+      ...partySection(ctx, members, party),
       ...lines,
       ...lateBits.lines,
     ].join("\n"),
-    components: lateBits.rows,
-    allowed_mentions: { users: discordIdsOf(ctx, s.party) },
+    components: rows,
+    allowed_mentions: { users: discordIdsOf(ctx, members) },
   };
 }
 
-/** The locked-in message for a saved session (its players are the party), with the current late check. */
-export function storedPlannedMessage(ctx: GroupContext, session: PlaySession, late: LateTally): DiscordMessage {
+/** The locked-in message for a saved session, with its current party and late check. */
+export function storedPlannedMessage(ctx: GroupContext, session: PlaySession, late: LateTally, party: PartyState): DiscordMessage {
   return plannedSessionMessage(
     sessionGame(ctx, session),
     {
       startMs: late.startMs,
       endMs: late.endMs ?? late.startMs,
       pauses: session.plan?.pauses ?? [],
-      party: late.players,
+      party: party.party,
     },
     late,
+    party,
   );
+}
+
+/**
+ * The private "vote someone out" picker (only the voter sees it): a button per teammate with the votes so far.
+ * `note` says what just happened. Add the ephemeral flag when sending it as a new reply.
+ */
+export function kickPickerMessage(ctx: GroupContext, party: PartyState, viewerId: string, note?: string): DiscordMessage {
+  const nameOf = (id: string) => ctx.byId.get(id)?.name ?? "someone";
+  const others = party.party.filter((id) => id !== viewerId);
+  const buttons: Button[] = others.slice(0, 25).map((id) => {
+    const mine = party.mine.includes(id);
+    return {
+      type: 2,
+      style: mine ? 4 : 2,
+      label: `${mine ? "✓ " : ""}${nameOf(id).slice(0, 60)} · ${party.votes[id] ?? 0}/${party.needed}`,
+      custom_id: `kick:${party.sessionId}:${id}`,
+    };
+  });
+  const rows: ActionRow[] = [];
+  for (let i = 0; i < buttons.length; i += 5) rows.push({ type: 1, components: buttons.slice(i, i + 5) });
+  const help = others.length
+    ? `🗳️ **Vote someone out** (late, or not coming). It takes ${party.needed} vote${party.needed === 1 ? "" : "s"}. Votes are anonymous; tap again to take yours back.`
+    : "Nobody else is left in the party.";
+  return {
+    content: [note, help].filter(Boolean).join("\n"),
+    components: party.open ? rows : [],
+    allowed_mentions: { parse: [] },
+  };
 }
 
 /**
@@ -223,13 +281,31 @@ export function lobbyMessage(
 }
 
 /**
- * An older post of a lobby that was posted again with /lfg: point to the new post and drop the buttons, so
- * only one post per lobby has them. `newRef` is "channelId:messageId".
+ * A lobby that closed because someone ran /lfg again: point to the new post and drop the buttons, so only the
+ * new lobby has them. `newRef` is "channelId:messageId".
  */
-export function lobbyMovedMessage(newRef: string, guildId?: string): DiscordMessage {
+export function lobbyReplacedMessage(newRef: string, guildId?: string): DiscordMessage {
   const [channelId, messageId] = newRef.split(":");
   const where = guildId && channelId && messageId ? `: https://discord.com/channels/${guildId}/${channelId}/${messageId}` : " below.";
-  return { content: `↪️ This lobby moved to a newer post${where}`, components: [], allowed_mentions: { parse: [] } };
+  return { content: `🏁 Lobby closed. A new one was opened${where}`, components: [], allowed_mentions: { parse: [] } };
+}
+
+/** DM for someone who asked for one (in their profile) when a lobby they're in gets a full 5-stack. */
+export function stackReadyDm(ctx: GroupContext, game: GameProgress, lobbyLink: string | null): DiscordMessage {
+  const who = ctx.members
+    .filter((m) => game.playing.includes(m.id))
+    .map((m) => m.name)
+    .join(", ");
+  return {
+    content: [
+      `🎮 **${game.game.name} ${partyLabel(game.game.partySize)} is ready:** ${who}. Hop in voice!`,
+      lobbyLink ? `Lobby: ${lobbyLink}` : null,
+      "-# You asked for this DM in your profile (My availability → Profile).",
+    ]
+      .filter(Boolean)
+      .join("\n"),
+    allowed_mentions: { parse: [] },
+  };
 }
 
 /** Private reply to "/back <time>". Times are shown in their profile's zone, the zone the time was read in. */

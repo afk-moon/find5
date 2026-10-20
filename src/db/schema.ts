@@ -73,6 +73,8 @@ export const memberProfiles = pgTable("member_profiles", {
   nightBeforeWfhUntil: text("night_before_wfh_until"),
   discordId: text("discord_id"),
   color: text("color"),
+  /** DM them on Discord when a lobby they're in gets a full 5-stack (for people who mute the server). */
+  dmWhenFull: boolean("dm_when_full").notNull().default(false),
   updatedAt: updatedAt(),
 });
 
@@ -294,4 +296,25 @@ export const lateReports = pgTable(
     createdAt: createdAt(),
   },
   (t) => [primaryKey({ columns: [t.sessionId, t.reporterId, t.lateUserId] })],
+);
+
+/**
+ * Votes to remove someone from a locked-in session's party (they're late, or can't make it but didn't say so).
+ * Shown only as counts, so voters stay anonymous.
+ */
+export const kickVotes = pgTable(
+  "kick_votes",
+  {
+    sessionId: text("session_id")
+      .notNull()
+      .references(() => playSessions.id, { onDelete: "cascade" }),
+    voterId: text("voter_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    targetId: text("target_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    createdAt: createdAt(),
+  },
+  (t) => [primaryKey({ columns: [t.sessionId, t.voterId, t.targetId] })],
 );
