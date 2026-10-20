@@ -4,6 +4,7 @@ import {
   WEEKDAY_SHORT,
   discordTs,
   fmtDate,
+  fmtDay,
   fmtDuration,
   fmtRange,
   fmtTime,
@@ -106,19 +107,23 @@ function lateSection(ctx: GroupContext, late: LateTally): { lines: string[]; row
   return { lines, rows };
 }
 
+/** "🗳️ Votes to remove: **Sam** 1/2" while voting is open (counts only, so voters stay anonymous). */
+function votesLine(ctx: GroupContext, party: PartyState | null | undefined): string[] {
+  if (!party?.open) return [];
+  const pending = party.party.filter((id) => (party.votes[id] ?? 0) > 0);
+  if (!pending.length) return [];
+  const nameOf = (id: string) => ctx.byId.get(id)?.name ?? "someone";
+  return [`🗳️ Votes to remove: ${pending.map((id) => `**${nameOf(id)}** ${party.votes[id]}/${party.needed}`).join(", ")}`];
+}
+
 /** Party lines for a locked-in post: who's in (and how many short), who's out, and open votes to remove someone. */
 function partySection(ctx: GameContext, members: readonly string[], party: PartyState | null | undefined): string[] {
-  const nameOf = (id: string) => ctx.byId.get(id)?.name ?? "someone";
   const P = ctx.game.partySize;
   const short = members.length < P ? ` (${members.length}/${P}, need ${P - members.length} more)` : "";
   const lines = [`Party: ${members.length ? names(ctx, members) : "nobody yet"}${short}`];
   if (party?.dropped.length) lines.push(`🙅 Can't make it: ${names(ctx, party.dropped)}`);
   if (party?.removed.length) lines.push(`🚪 Voted out: ${names(ctx, party.removed)}`);
-  const pending = party?.open ? Object.entries(party.votes).filter(([, n]) => n > 0) : [];
-  if (party && pending.length) {
-    lines.push(`🗳️ Votes to remove: ${pending.map(([id, n]) => `**${nameOf(id)}** ${n}/${party.needed}`).join(", ")}`);
-  }
-  return lines;
+  return [...lines, ...votesLine(ctx, party)];
 }
 
 export function plannedSessionMessage(
@@ -197,14 +202,55 @@ export function kickPickerMessage(ctx: GroupContext, party: PartyState, viewerId
       custom_id: `kick:${party.sessionId}:${id}`,
     };
   });
-  const rows: ActionRow[] = [];
-  for (let i = 0; i < buttons.length; i += 5) rows.push({ type: 1, components: buttons.slice(i, i + 5) });
-  const help = others.length
-    ? `🗳️ **Vote someone out** (late, or not coming). It takes ${party.needed} vote${party.needed === 1 ? "" : "s"}. Votes are anonymous; tap again to take yours back.`
-    : "Nobody else is left in the party.";
+  const live = party.kind === "live";
+  const takes = `It takes ${party.needed} vote${party.needed === 1 ? "" : "s"}. Votes are anonymous; tap again to take yours back.`;
+  const help = !others.length
+    ? `Nobody else is ${live ? "in the lobby" : "left in the party"}.`
+    : live
+      ? `🗳️ **Vote someone out of the lobby** (tapped in but not around, or not coming). ${takes} They can tap I'm in to come back.`
+      : `🗳️ **Vote someone out** (late, or not coming). ${takes}`;
   return {
     content: [note, help].filter(Boolean).join("\n"),
-    components: party.open ? rows : [],
+    components: party.open ? rowsOf(buttons) : [],
+    allowed_mentions: { parse: [] },
+  };
+}
+
+/** Buttons in rows of 5 (Discord's limit is 5 rows of 5). */
+function rowsOf(buttons: Button[]): ActionRow[] {
+  const rows: ActionRow[] = [];
+  for (let i = 0; i < buttons.length && rows.length < 5; i += 5) rows.push({ type: 1, components: buttons.slice(i, i + 5) });
+  return rows;
+}
+
+/**
+ * /votekick when that person is in more than one place (the lobby and a locked-in session, say): a button for
+ * each with the votes so far, and the voter picks. Times are in the voter's zone (buttons can't show Discord
+ * timestamps).
+ */
+export function kickChoiceMessage(
+  ctx: GroupContext,
+  options: ReadonlyArray<{ session: PlaySession; party: PartyState }>,
+  targetId: string,
+  zone: string,
+): DiscordMessage {
+  const name = ctx.byId.get(targetId)?.name ?? "them";
+  const buttons: Button[] = options.slice(0, 25).map(({ session, party }) => {
+    const start = session.startAt.getTime();
+    const where =
+      session.kind === "live" ? "The lobby" : `${sessionGame(ctx, session).game.name} ${fmtDay(start, zone)} ${fmtTime(start, zone)}`;
+    const mine = party.mine.includes(targetId);
+    return {
+      type: 2,
+      style: mine ? 4 : 2,
+      label: `${mine ? "✓ " : ""}${where} · ${party.votes[targetId] ?? 0}/${party.needed}`.slice(0, 80),
+      emoji: { name: session.kind === "live" ? "🎮" : "🔒" },
+      custom_id: `kick:${session.id}:${targetId}`,
+    };
+  });
+  return {
+    content: `🗳️ **${name}** is in more than one. Where do you want to vote them out?`,
+    components: rowsOf(buttons),
     allowed_mentions: { parse: [] },
   };
 }
@@ -220,6 +266,7 @@ export function lobbyMessage(
   session: PlaySession,
   summary: LiveSummary,
   freeNow: readonly string[],
+  party?: PartyState | null,
 ): DiscordMessage {
   const active = session.status === "active";
   const games = gamesInLobby(summary);
@@ -245,6 +292,8 @@ export function lobbyMessage(
   }
   if (summary.declined.length) lines.push(`🙅 Not tonight: ${names(ctx, summary.declined)}`);
   if (summary.left.length) lines.push(`👋 Left: ${names(ctx, summary.left)}`);
+  if (summary.kicked.length) lines.push(`🚪 Voted out: ${names(ctx, summary.kicked)}${active ? " (tap I'm in to come back)" : ""}`);
+  if (active) lines.push(...votesLine(ctx, party));
   if (active && freeNow.length) lines.push(`📣 Free right now: ${names(ctx, freeNow)}`);
   // When it opened, so an old post is obvious at a glance ("2 days ago" while open, the full date once closed).
   const opener = ctx.byId.get(session.createdBy ?? "")?.name;
@@ -270,6 +319,10 @@ export function lobbyMessage(
               { type: 2, style: 1, label: "I'm back", custom_id: `lfg:back:${id}` },
               { type: 2, style: 4, label: "Leaving", custom_id: `lfg:left:${id}` },
             ],
+          },
+          {
+            type: 1,
+            components: [{ type: 2, style: 2, label: "Vote someone out", emoji: { name: "🗳️" }, custom_id: `kickmenu:${id}` }],
           },
         ]
       : [];

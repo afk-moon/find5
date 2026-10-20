@@ -24,7 +24,14 @@ import {
 import { forGame, loadGroupContext, requireViewer, type GroupContext } from "@/server/context";
 import { addGame, removeGame, setMemberGames, updateGame } from "@/server/games";
 import { toggleLateReport } from "@/server/lateness";
-import { announceLockIn, announceWfhDecision, syncLobby, syncPlannedMessage, syncWfhVote } from "@/server/notify";
+import {
+  announceLockIn,
+  announceWfhDecision,
+  syncLobby,
+  syncPlannedMessage,
+  syncSessionPost,
+  syncWfhVote,
+} from "@/server/notify";
 import { toggleDropOut, toggleKickVote } from "@/server/party";
 import { SESSION_COOKIE } from "@/server/session-cookie";
 import {
@@ -207,12 +214,12 @@ export async function toggleDropOutAction(sessionId: string): Promise<ActionResu
   }
 }
 
-/** Vote to remove a teammate from a locked-in session's party (tap again to take it back). */
+/** Vote to remove someone from the lobby or a locked-in session's party (tap again to take it back). */
 export async function toggleKickVoteAction(sessionId: string, targetId: string): Promise<ActionResult> {
   const { ctx, userId } = await requireViewer();
   try {
-    const { voted, removed } = await toggleKickVote(ctx, sessionId, userId, targetId);
-    await syncPlannedMessage(ctx, sessionId);
+    const { voted, removed, session } = await toggleKickVote(ctx, sessionId, userId, targetId);
+    await syncSessionPost(ctx, session);
     refreshAll();
     const name = ctx.byId.get(targetId)?.name ?? "They";
     return { ok: true, message: removed ? `${name} was voted out` : voted ? "Vote counted" : "Vote taken back" };

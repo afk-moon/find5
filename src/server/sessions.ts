@@ -8,19 +8,20 @@ import { findWindowByBounds } from "./windows";
 
 export type PlaySession = typeof playSessions.$inferSelect;
 export type SessionPlayer = typeof playSessionPlayers.$inferSelect;
-export interface SessionWithPlayers {
-  session: PlaySession;
-  players: SessionPlayer[];
-}
-/** A vote to remove someone from a locked-in session's party. */
+/** A vote to remove someone from a lobby or a locked-in session's party. */
 export interface KickVote {
   voterId: string;
   targetId: string;
 }
-/** A locked-in session with its players and the votes to remove someone. */
-export interface PlannedSession extends SessionWithPlayers {
+/** A session with its players and the votes to remove someone. */
+export interface SessionWithPlayers {
+  session: PlaySession;
+  players: SessionPlayer[];
   votes: KickVote[];
 }
+
+/** Lobby statuses that count as being in the lobby: in, on the way, or at dinner. */
+export const LOBBY_STATUSES: readonly PlayerStatus[] = ["in", "soon", "quick_dinner", "long_dinner"];
 
 /** How long a long-dinner break is assumed to take when someone taps "long dinner" live. */
 export const LONG_DINNER_MINUTES = 90;
@@ -31,7 +32,7 @@ async function findWithPlayers(
   where: () => SQL | undefined,
   order: "asc" | "desc",
   limit: number,
-): Promise<PlannedSession[]> {
+): Promise<SessionWithPlayers[]> {
   const db = await getDb();
   const byStart = () => (order === "asc" ? asc(playSessions.startAt) : desc(playSessions.startAt));
   const ids = () => db.select({ id: playSessions.id }).from(playSessions).where(where()).orderBy(byStart()).limit(limit);
@@ -49,14 +50,18 @@ async function findWithPlayers(
 
 export async function getSession(groupId: string, sessionId: string): Promise<SessionWithPlayers | null> {
   const db = await getDb();
-  const [[session], players] = await Promise.all([
+  const [[session], players, votes] = await Promise.all([
     db
       .select()
       .from(playSessions)
       .where(and(eq(playSessions.id, sessionId), eq(playSessions.groupId, groupId))),
     db.select().from(playSessionPlayers).where(eq(playSessionPlayers.sessionId, sessionId)),
+    db
+      .select({ voterId: kickVotes.voterId, targetId: kickVotes.targetId })
+      .from(kickVotes)
+      .where(eq(kickVotes.sessionId, sessionId)),
   ]);
-  return session ? { session, players } : null;
+  return session ? { session, players, votes } : null;
 }
 
 export function planFromWindow(w: PlayWindow): SessionPlan {
@@ -106,7 +111,7 @@ export async function lockInWindow(ctx: GameContext, userId: string, startMs: nu
   return { session, window, created: true };
 }
 
-export function upcomingPlanned(groupId: string, nowMs = Date.now()): Promise<PlannedSession[]> {
+export function upcomingPlanned(groupId: string, nowMs = Date.now()): Promise<SessionWithPlayers[]> {
   return findWithPlayers(
     () =>
       and(
@@ -292,6 +297,8 @@ export interface LiveSummary {
   soon: Array<{ id: string; backAt: number | null }>;
   declined: string[];
   left: string[];
+  /** Voted out by the others (they can tap I'm in to come back). */
+  kicked: string[];
   /** Every game, readiest first: ready ones, then the fewest more needed, then the most people in. */
   games: GameProgress[];
   /** The fewest more people any game needs. */
@@ -334,6 +341,7 @@ export function summarizeLive(games: readonly GameView[], players: SessionPlayer
     soon,
     declined: ids("declined"),
     left: ids("left"),
+    kicked: ids("kicked"),
     games: progress,
     needed: progress.length ? Math.min(...progress.map((g) => g.needed)) : 0,
   };

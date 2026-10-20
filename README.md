@@ -20,7 +20,8 @@ line up their work-from-home days. It's a web app plus an optional Discord bot.
 - **DM when a 5-stack fills:** muted the server? Tick 📩 under **My availability → Profile** and the bot DMs
   you when a lobby you're in fills a 5-stack for a game you play.
 - **Can't make it / vote out:** on a locked-in session, anyone can tap 🙅 **Can't make it**, and teammates
-  can vote out someone who's late or not coming (2 votes; 1 in a duo).
+  can vote out someone who's late or not coming (2 votes; 1 in a duo). The lobby has 🗳️ **Vote someone
+  out** too, for someone who tapped in but isn't around, and `/votekick @name` works for both.
 - **Late reports:** once a locked-in session starts, teammates can report who was late. Anyone late in
   more than half of their last 10 sessions gets a ⏰ **Frequently late** tag next to their name.
 - **Discord:** login, slash commands, lobby buttons, announcements, and Scheduled Events.
@@ -231,6 +232,10 @@ game: it pings whoever is free right now, and as people join it shows each game'
   **📩 DM me when a 5-stack fills** under **My availability → Profile**: when a lobby they're in fills a
   5-stack (Valorant, League…) for a game they play, the bot DMs them a link. Whoever's tap filled it doesn't
   get one. Duos and 4-stacks don't send DMs.
+- 🗳️ **Vote someone out** (or `/votekick @name`) for someone who tapped I'm in but isn't around, or said
+  “in 15 min” and never showed. Only people who are in vote, it takes 2 votes (1 when only two are in, half
+  of them in bigger lobbies), and votes are anonymous. They leave the lobby's count, and can tap I'm in to
+  come back with a clean slate.
 
 **Can't make it / vote out.** On a locked-in session (its card on the Windows page, or its Discord post):
 - 🙅 **Can't make it** takes you out of the party. Tap again to rejoin, any time until the session ends.
@@ -239,6 +244,8 @@ game: it pings whoever is free right now, and as people join it shows each game'
   Votes are anonymous and can be taken back. Someone voted out can't rejoin that session.
 - The post shows who's still in (“4/5, need 1 more”), who can't make it, who was voted out, and open votes.
   In Discord, the vote buttons open in a private picker that only you see.
+- `/votekick @name` votes them out wherever they are with you: the lobby or a locked-in session. If it's
+  more than one, it asks which. Running it again doesn't undo your vote; tap their name in the picker for that.
 - Leaving before the start takes you out of the late check; leaving after it doesn't, so dropping out
   can't wipe a late report.
 
@@ -296,6 +303,8 @@ Commands:
   (start typing and pick it from the list).
 - `/lfg`: open a new lobby, for any game (the open one closes). It pings whoever's free and shows which
   games the people who join can play.
+- `/votekick @name`: vote someone out of the lobby or a locked-in session you're both in (AFK, late, or not
+  coming). Only you see the reply.
 - `/dinner quick|long`
 - `/back 930` (or `9pm`, `21:30`, `noon`): you're away until then. Your availability for today changes to
   busy until then and free from then, so windows and pings use it right away. The time is read in your

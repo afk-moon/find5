@@ -15,13 +15,16 @@ export interface LateRecord extends SessionLateRecord {
   endMs: number | null;
 }
 
+/** Statuses that mean someone isn't playing a session: declined ("Can't make it"), left, or voted out. */
+const OUT = new Set(["declined", "left", "kicked"]);
+
 /**
  * Players who count for a session's late check: everyone still in the party, plus anyone who dropped out or
  * was voted out after it started (leaving late doesn't wipe a late report). People who were out before the
  * start don't count.
  */
 const countsForLate = (p: { status: string; updatedAt: Date }, startMs: number) =>
-  (p.status !== "declined" && p.status !== "left") || p.updatedAt.getTime() >= startMs;
+  !OUT.has(p.status) || p.updatedAt.getTime() >= startMs;
 
 /** Locked-in sessions that have started (newest first), with their players and late reports. */
 export async function loadLateRecords(groupId: string, nowMs = Date.now(), limit = 200): Promise<LateRecord[]> {

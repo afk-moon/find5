@@ -261,7 +261,8 @@ export const playSessions = pgTable("play_sessions", {
   updatedAt: updatedAt(),
 });
 
-export const playerStatuses = ["in", "soon", "quick_dinner", "long_dinner", "left", "declined"] as const;
+/** "kicked": voted out by the others (of a lobby, or a locked-in session's party). */
+export const playerStatuses = ["in", "soon", "quick_dinner", "long_dinner", "left", "declined", "kicked"] as const;
 export type PlayerStatus = (typeof playerStatuses)[number];
 
 export const playSessionPlayers = pgTable(

@@ -23,11 +23,12 @@ import {
 import { lateVotingClosesAt, type PlayWindow } from "@/engine";
 import type { GameContext, GroupContext } from "./context";
 import { getLateTally } from "./lateness";
-import { getParty } from "./party";
+import { getParty, partyOf } from "./party";
 import {
   closeExpiredLobbies,
   fullStacks,
   getSession,
+  LOBBY_STATUSES,
   summarizeLive,
   type GameProgress,
   type PlaySession,
@@ -108,6 +109,11 @@ export function syncPlannedMessage(ctx: GroupContext, sessionId: string) {
   });
 }
 
+/** Refresh a session's Discord post, whether it's the lobby or a locked-in session (after a vote, say). */
+export function syncSessionPost(ctx: GroupContext, session: Pick<PlaySession, "id" | "kind">) {
+  return session.kind === "live" ? syncLobby(ctx, session.id) : syncPlannedMessage(ctx, session.id);
+}
+
 /**
  * Daily cron: show the result on late checks that closed recently and remove their buttons.
  * Looks back 2 days because the cron can run up to an hour late; editing a message twice does no harm.
@@ -149,7 +155,7 @@ export function stackDms(ctx: GroupContext, players: readonly SessionPlayer[], w
   const summary = summarizeLive(ctx.games, [...players]);
   const full = fullStacks(summary);
   const filled = summary.games.filter((g) => full.includes(g.game.id) && !watch.before.includes(g.game.id));
-  const inLobby = new Set(players.filter((p) => p.status !== "declined" && p.status !== "left").map((p) => p.userId));
+  const inLobby = new Set(players.filter((p) => LOBBY_STATUSES.includes(p.status)).map((p) => p.userId));
   const sent = new Set<string>();
   const dms: StackDm[] = [];
   for (const game of filled) {
@@ -190,7 +196,8 @@ export function syncLobby(ctx: GroupContext, sessionId: string, watch?: StackWat
     if (!s) return;
     const summary = summarizeLive(ctx.games, s.players);
     // Every render lists who's free and hasn't answered, so edits don't drop that line.
-    const message = lobbyMessage(ctx, s.session, summary, freeNowNotInLobby(ctx, s.players.map((p) => p.userId)));
+    const free = freeNowNotInLobby(ctx, s.players.map((p) => p.userId));
+    const message = lobbyMessage(ctx, s.session, summary, free, partyOf(ctx, s.session, s.players, s.votes, null));
     const ref = parseRef(s.session.discordMessageId);
     let session = s.session;
     if (ref) {

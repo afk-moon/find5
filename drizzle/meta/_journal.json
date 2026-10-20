@@ -36,6 +36,13 @@
       "when": 1792521361749,
       "tag": "0004_kick_votes_and_dms",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1792539476458,
+      "tag": "0005_kicked_status",
+      "breakpoints": true
     }
   ]
 }

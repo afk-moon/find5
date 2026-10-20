@@ -3,9 +3,11 @@ import { ActionButton } from "@/components/ActionButton";
 import { Avatar } from "@/components/Avatar";
 import { AutoRefresh } from "@/components/client";
 import { MemberName } from "@/components/LateTag";
+import { VoteOut } from "@/components/VoteOut";
 import { currentGamingDay, vacationOn } from "@/engine";
 import { fmtDate, fmtRelative, fmtTime, zoneAbbr } from "@/lib/format";
 import { mainGame, requestTime, requireMember, requireViewer, type GroupContext, type MemberView } from "@/server/context";
+import { partyOf } from "@/server/party";
 import { activeLive, gamesInLobby, progressText, summarizeLive, type SessionWithPlayers } from "@/server/sessions";
 import { membersNow, type MemberNow } from "@/server/windows";
 
@@ -85,6 +87,9 @@ function LobbyCard({
   const waiting = ctx.members.filter((m) => !answered.has(m.id));
   const name = (id: string) => ctx.byId.get(id);
   const act = (a: LiveAction) => liveAction.bind(null, live.session.id, a);
+  // Votes to remove someone (AFK, or "in 15 min" and never showed): counts only, so voters stay anonymous.
+  const party = partyOf(ctx, live.session, live.players, live.votes, me.id, now);
+  const votesOn = (id: string) => (party.votes[id] ? `🗳️ ${party.votes[id]}/${party.needed}` : "");
 
   const headline =
     summary.state === "full"
@@ -128,7 +133,10 @@ function LobbyCard({
         </div>
 
         <div className="flex flex-wrap gap-2">
-          {(!mine || mine === "declined" || mine === "left" || mine === "soon") && (
+          {mine === "kicked" && (
+            <p className="w-full text-sm text-val">🚪 You were voted out of the lobby. Here after all? Tap I&apos;m in.</p>
+          )}
+          {(!mine || mine === "declined" || mine === "left" || mine === "kicked" || mine === "soon") && (
             <>
               <ActionButton className="btn btn-primary" action={act("in")}>I&apos;m in</ActionButton>
               {mine !== "soon" && <ActionButton action={act("soon")}>In 15 min</ActionButton>}
@@ -151,7 +159,7 @@ function LobbyCard({
         </div>
 
         <div className="space-y-2 border-t border-line pt-3">
-          <Group title="In" ids={summary.playing} lookup={name} extra={() => ""} />
+          <Group title="In" ids={summary.playing} lookup={name} extra={votesOn} />
           {summary.eating.length > 0 && (
             <div className="space-y-1">
               <div className="label">At dinner</div>
@@ -165,6 +173,7 @@ function LobbyCard({
                       {e.kind === "quick" ? "🍔 quick, the party waits" : "🍝 long, find a sub"}
                       {e.backAt ? `, back ${fmtRelative(e.backAt, now)}` : ""}
                     </span>
+                    {votesOn(e.id) && <span className="text-xs text-val">{votesOn(e.id)}</span>}
                   </div>
                 ) : null;
               })}
@@ -176,11 +185,12 @@ function LobbyCard({
             lookup={name}
             extra={(id) => {
               const at = summary.soon.find((s) => s.id === id)?.backAt;
-              return at ? `back ${fmtTime(at, zone)} (${fmtRelative(at, now)})` : "";
+              return [at ? `back ${fmtTime(at, zone)} (${fmtRelative(at, now)})` : "", votesOn(id)].filter(Boolean).join(" · ");
             }}
           />
           <Group title="Not tonight" ids={summary.declined} lookup={name} extra={() => ""} dim />
           <Group title="Left" ids={summary.left} lookup={name} extra={() => ""} dim />
+          <Group title="Voted out" ids={summary.kicked} lookup={name} extra={() => "can tap I'm in to come back"} dim />
           {waiting.length > 0 && (
             <div className="space-y-1">
               <div className="label">Haven&apos;t answered</div>
@@ -206,6 +216,7 @@ function LobbyCard({
               })}
             </div>
           )}
+          <VoteOut ctx={ctx} party={party} viewerId={me.id} />
         </div>
       </div>
 

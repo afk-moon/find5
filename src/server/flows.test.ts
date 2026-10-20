@@ -47,7 +47,7 @@ const { getDb } = await import("@/db");
 const { memberProfiles, playSessions, playSessionPlayers } = await import("@/db/schema");
 const { DEMO_GROUP_ID } = await import("@/db/seed");
 const { pattern, lateVotingState, resolvePattern, currentGamingDay, EMPTY_PATTERN } = await import("@/engine");
-const { eq } = await import("drizzle-orm");
+const { and, eq } = await import("drizzle-orm");
 const { DateTime } = await import("luxon");
 
 type Ctx = Awaited<ReturnType<typeof loadGroupContext>>;
@@ -1043,5 +1043,176 @@ describe("opt-in DMs when a 5-stack fills", () => {
     expect(await dmOf()).toBe(true);
     await saveProfile("demo-dev", { ...dev, dmWhenFull: false });
     expect(await dmOf()).toBe(false);
+  });
+});
+
+describe("lobby vote-out and /votekick", () => {
+  const ALL = ["demo-maya", "demo-dev", "demo-rosa", "demo-kai", "demo-sam"];
+  const made: string[] = [];
+  const user = (id: string) => ({ user: { id, username: id } });
+  const base = { id: "1", application_id: "app", token: "t", channel_id: "chan" };
+  /** A tap on a button, as the Discord user `discordId`; also returns the work queued after the reply. */
+  const click = async (customId: string, discordId: string) => {
+    const tasks: Array<() => Promise<unknown>> = [];
+    const res = await handleInteraction(
+      { ...base, type: 3, member: user(discordId), data: { custom_id: customId }, message: { id: "msg", channel_id: "chan" } },
+      (t) => tasks.push(t),
+    );
+    return { ...res, tasks };
+  };
+  const votekick = async (discordId: string, target: string) => {
+    const tasks: Array<() => Promise<unknown>> = [];
+    const res = await handleInteraction(
+      { ...base, type: 2, member: user(discordId), data: { name: "votekick", options: [{ name: "user", value: target }] } },
+      (t) => tasks.push(t),
+    );
+    expect(res).toMatchObject({ type: 4, data: { flags: 64 } }); // always private
+    return { ...res, tasks };
+  };
+  const ids = (msg: { components?: Array<{ components: Array<{ custom_id?: string }> }> }) =>
+    (msg.components ?? []).flatMap((r) => r.components.map((b) => b.custom_id));
+  const soon = () => new Date(Date.now() + 15 * 60_000);
+
+  beforeAll(async () => {
+    const db = await getDb();
+    for (const [userId, discordId] of [["demo-kai", "1001"], ["demo-sam", "1002"], ["demo-dev", "1003"]]) {
+      await db.update(memberProfiles).set({ discordId }).where(eq(memberProfiles.userId, userId));
+    }
+    // A clean slate: no locked-in sessions left over from earlier tests.
+    await db
+      .update(playSessions)
+      .set({ status: "cancelled" })
+      .where(and(eq(playSessions.groupId, ctx.group.id), eq(playSessions.kind, "planned"), eq(playSessions.status, "active")));
+    ctx = await fresh();
+  });
+  afterAll(async () => {
+    const db = await getDb();
+    for (const id of made) await db.update(playSessions).set({ status: "cancelled" }).where(eq(playSessions.id, id));
+    await db.update(memberProfiles).set({ discordId: null }).where(eq(memberProfiles.userId, "demo-dev"));
+    const live = await activeLive(ctx.group);
+    if (live) await endSession(ctx, live.session.id);
+    ctx = await fresh();
+  });
+
+  it("lets the people who are in vote out someone who isn't around, who can tap I'm in to come back", async () => {
+    const { sessionId } = await startFreshLive(ctx, "demo-maya");
+    try {
+      for (const id of ["demo-dev", "demo-rosa", "demo-kai"]) await setPlayerStatus(ctx, sessionId, id, "in");
+      await setPlayerStatus(ctx, sessionId, "demo-sam", "soon", soon());
+      const lobby = async () => (await getParty(ctx, sessionId))!.party;
+      expect(await lobby()).toMatchObject({ kind: "live", party: ALL, voters: ALL.filter((id) => id !== "demo-sam"), needed: 2, open: true });
+
+      const jordan = ctx.members.find((m) => m.name === "Jordan")!.id;
+      await expect(toggleKickVote(ctx, sessionId, "demo-sam", "demo-kai")).rejects.toThrow(/Tap I'm in first/); // on the way: can't vote
+      await expect(toggleKickVote(ctx, sessionId, "demo-kai", "demo-kai")).rejects.toThrow(/Leaving/);
+      await expect(toggleKickVote(ctx, sessionId, "demo-maya", jordan)).rejects.toThrow(/not in the lobby/);
+      await expect(toggleDropOut(ctx, sessionId, "demo-maya")).rejects.toThrow(/Leaving/);
+
+      // Sam said "in 15 min" and never showed: two votes and he's out.
+      expect(await toggleKickVote(ctx, sessionId, "demo-maya", "demo-sam")).toMatchObject({ voted: true, removed: false });
+      const out = await toggleKickVote(ctx, sessionId, "demo-dev", "demo-sam");
+      expect(out).toMatchObject({ removed: true, party: { removed: ["demo-sam"] } });
+      expect(out.party.party).not.toContain("demo-sam");
+      let s = (await getSession(ctx.group.id, sessionId))!;
+      expect(summarizeLive(ctx.games, s.players).kicked).toEqual(["demo-sam"]);
+      expect(s.votes.filter((v) => v.targetId === "demo-sam")).toEqual([]); // a fresh start if he comes back
+
+      await toggleKickVote(ctx, sessionId, "demo-maya", "demo-kai");
+      s = (await getSession(ctx.group.id, sessionId))!;
+      const msg = lobbyMessage(ctx, s.session, summarizeLive(ctx.games, s.players), [], partyOf(ctx, s.session, s.players, s.votes, null));
+      expect(msg.content).toContain(`🚪 Voted out: ${mention(ctx.byId.get("demo-sam"))} (tap I'm in to come back)`);
+      expect(msg.content).toContain("🗳️ Votes to remove: **Kai** 1/2");
+      expect(msg.components!.at(-1)!.components.map((b) => b.custom_id)).toEqual([`kickmenu:${sessionId}`]);
+      assertDiscordLimits(msg);
+
+      // Here after all: I'm in puts Sam back, with no votes against him.
+      await setPlayerStatus(ctx, sessionId, "demo-sam", "in");
+      const back = await lobby();
+      expect(back.party).toContain("demo-sam");
+      expect(back.removed).toEqual([]);
+      expect(back.votes["demo-sam"]).toBeUndefined();
+    } finally {
+      await endSession(ctx, sessionId);
+    }
+    await expect(toggleKickVote(ctx, sessionId, "demo-maya", "demo-kai")).rejects.toThrow(/closed/);
+  });
+
+  it("works from the lobby post: a private picker for people who are in", async () => {
+    const { sessionId } = await startFreshLive(ctx, "demo-maya");
+    try {
+      for (const id of ["demo-kai", "demo-dev"]) await setPlayerStatus(ctx, sessionId, id, "in");
+      await setPlayerStatus(ctx, sessionId, "demo-sam", "soon", soon());
+
+      const early = await click(`kickmenu:${sessionId}`, "1002"); // Sam's on the way
+      expect(early).toMatchObject({ type: 4, data: { flags: 64 } });
+      expect(early.data!.content).toMatch(/Tap I'm in first/);
+
+      const menu = await click(`kickmenu:${sessionId}`, "1001"); // Kai
+      expect(menu).toMatchObject({ type: 4, data: { flags: 64 } });
+      expect(menu.data!.content).toContain("Vote someone out of the lobby");
+      expect(ids(menu.data!)).toEqual(["demo-maya", "demo-dev", "demo-sam"].map((id) => `kick:${sessionId}:${id}`));
+      assertDiscordLimits(menu.data!);
+
+      const vote = await click(`kick:${sessionId}:demo-sam`, "1001");
+      expect(vote.type).toBe(7); // updates the picker
+      expect(vote.data!.content).toContain("You voted to remove **Sam** (1 of 2)");
+      expect(vote.tasks).toHaveLength(1); // refresh the lobby post
+      const second = await click(`kick:${sessionId}:demo-sam`, "1003"); // Dev
+      expect(second.data!.content).toContain("🚪 **Sam** was voted out of the lobby.");
+
+      const back = await click(`lfg:in:${sessionId}`, "1002");
+      expect(back.type).toBe(7);
+      expect(back.data!.content).not.toContain("Voted out");
+    } finally {
+      await endSession(ctx, sessionId);
+    }
+  });
+
+  it("/votekick votes someone out where they are, and asks which when it's more than one place", async () => {
+    expect((await votekick("1001", "999")).data!.content).toMatch(/I don't know them yet/);
+    expect((await votekick("1001", "1001")).data!.content).toMatch(/can't vote yourself out/);
+    expect((await votekick("1001", "1002")).data!.content).toMatch(/isn't in the open lobby or an upcoming locked-in session/);
+
+    const { sessionId } = await startFreshLive(ctx, "demo-maya");
+    try {
+      await setPlayerStatus(ctx, sessionId, "demo-sam", "in");
+      expect((await votekick("1001", "1002")).data!.content).toMatch(/Tap I'm in on the lobby post first/); // Kai isn't in
+
+      await setPlayerStatus(ctx, sessionId, "demo-kai", "in");
+      const first = await votekick("1001", "1002");
+      expect(first.data!.content).toContain("🗳️ You voted to remove **Sam** (1 of 2)");
+      expect(ids(first.data!)).toEqual(["demo-maya", "demo-sam"].map((id) => `kick:${sessionId}:${id}`)); // the picker, to undo
+      expect(first.tasks).toHaveLength(1); // refresh the lobby post
+      const again = await votekick("1001", "1002");
+      expect(again.data!.content).toContain("You already voted to remove **Sam** (1 of 2)");
+      expect(again.tasks).toHaveLength(0);
+
+      // Sam's also in a locked-in session with Kai: Kai picks where.
+      const db = await getDb();
+      const start = Date.now() + 30 * 3_600_000;
+      const [planned] = await db
+        .insert(playSessions)
+        .values({ groupId: ctx.group.id, gameId: val().game.id, kind: "planned", startAt: new Date(start), endAt: new Date(start + 7_200_000), createdBy: "demo-kai" })
+        .returning();
+      made.push(planned.id);
+      await db.insert(playSessionPlayers).values(ALL.map((userId) => ({ sessionId: planned.id, userId, status: "in" as const })));
+      const choice = await votekick("1001", "1002");
+      expect(choice.data!.content).toContain("**Sam** is in more than one");
+      expect(ids(choice.data!)).toEqual([`kick:${sessionId}:demo-sam`, `kick:${planned.id}:demo-sam`]);
+      const labels = choice.data!.components![0].components.map((b) => b.label);
+      expect(labels[0]).toBe("✓ The lobby · 1/2");
+      expect(labels[1]).toMatch(/^Valorant .+ · 0\/2$/);
+      assertDiscordLimits(choice.data!);
+      const picked = await click(`kick:${planned.id}:demo-sam`, "1001");
+      expect(picked.type).toBe(7);
+      expect(picked.data!.content).toContain("You voted to remove **Sam** (1 of 2)");
+
+      // Dev isn't in the lobby, so his /votekick goes to the session, and it's the second vote there.
+      const second = await votekick("1003", "1002");
+      expect(second.data!.content).toContain("🚪 **Sam** was voted out.");
+      expect((await getParty(ctx, planned.id))!.party.removed).toEqual(["demo-sam"]);
+    } finally {
+      await endSession(ctx, sessionId);
+    }
   });
 });

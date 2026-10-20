@@ -7,8 +7,24 @@ import { partyLabel } from "@/lib/games";
 import { setAwayUntil } from "@/server/away";
 import { findGame, forGame, gamesOf, loadGroupContext, type GameView, type GroupContext, type MemberView } from "@/server/context";
 import { getLateTally, toggleLateReport } from "@/server/lateness";
-import { freeNowNotInLobby, markLobbyReplaced, sendStackDms, stackDms, syncLobby, syncPlannedMessage } from "@/server/notify";
-import { getParty, toggleDropOut, toggleKickVote } from "@/server/party";
+import {
+  freeNowNotInLobby,
+  markLobbyReplaced,
+  sendStackDms,
+  stackDms,
+  syncLobby,
+  syncPlannedMessage,
+  syncSessionPost,
+} from "@/server/notify";
+import {
+  castKickVote,
+  getParty,
+  kickOptions,
+  partyOf,
+  toggleDropOut,
+  toggleKickVote,
+  type PartyState,
+} from "@/server/party";
 import {
   activeLive,
   endSession,
@@ -24,6 +40,7 @@ import { clearBallot, ensureVote, getWfhState, toggleBallotDay, weekStartOf } fr
 import { upcomingWindows } from "@/server/windows";
 import {
   awayMessage,
+  kickChoiceMessage,
   kickPickerMessage,
   lobbyMessage,
   storedPlannedMessage,
@@ -129,6 +146,14 @@ function rememberReply(i: Interaction, save: (ref: string) => Promise<unknown>) 
   };
 }
 
+/** What a vote did, for the voter's private picker. */
+function kickNote(name: string, r: { voted: boolean; changed: boolean; removed: boolean; party: PartyState }, targetId: string) {
+  const tally = `${r.party.votes[targetId] ?? 0} of ${r.party.needed}`;
+  if (r.removed) return `🚪 **${name}** was voted out${r.party.kind === "live" ? " of the lobby" : ""}.`;
+  if (!r.changed) return `You already voted to remove **${name}** (${tally}). Tap their name below to take it back.`;
+  return r.voted ? `🗳️ You voted to remove **${name}** (${tally}).` : `↩️ Took back your vote for **${name}**.`;
+}
+
 /** The `game:` option's suggestions as they type: matching games, the ones they play first. */
 function gameChoices(i: Interaction, ctx: GroupContext | null, discordId?: string): AutocompleteResponse {
   const typed = String(i.data?.options?.find((o) => o.focused)?.value ?? "").trim().toLowerCase();
@@ -184,6 +209,31 @@ async function onCommand(i: Interaction, ctx: GroupContext, me: MemberView, defe
         }
       });
       return reply(lobbyMessage(ctx, s.session, summarizeLive(ctx.games, s.players), freeNow));
+    }
+
+    case "votekick": {
+      // "/votekick user:@Sam": vote them out of the open lobby or a locked-in session you're both in.
+      const target = ctx.members.find((m) => m.discordId === String(option("user") ?? ""));
+      if (!target) return ephemeral(`I don't know them yet. They need to log in with Discord once at ${appUrl()}/login.`);
+      if (target.id === me.id) {
+        return ephemeral("You can't vote yourself out. Tap Leaving on the lobby post, or “Can't make it” on a locked-in session.");
+      }
+      const found = await kickOptions(ctx, me.id, target.id);
+      const options = found.filter((o) => o.canVote);
+      if (!options.length) {
+        return ephemeral(
+          found.some((o) => o.session.kind === "live")
+            ? "Only people who are in the lobby can vote. Tap I'm in on the lobby post first."
+            : found.length
+              ? `Only players in that session can vote **${target.name}** out.`
+              : `**${target.name}** isn't in the open lobby or an upcoming locked-in session.`,
+        );
+      }
+      // In more than one place (the lobby and a locked-in session, say): let them pick.
+      if (options.length > 1) return { type: 4, data: { ...kickChoiceMessage(ctx, options, target.id, me.timezone), flags: EPHEMERAL } };
+      const result = await castKickVote(ctx, options[0].session.id, me.id, target.id);
+      if (result.changed || result.removed) defer(() => syncSessionPost(ctx, result.session));
+      return { type: 4, data: { ...kickPickerMessage(ctx, result.party, me.id, kickNote(target.name, result, target.id)), flags: EPHEMERAL } };
     }
 
     case "dinner":
@@ -280,7 +330,7 @@ async function onButton(i: Interaction, ctx: GroupContext, me: MemberView, defer
     if (dms.length) defer(() => sendStackDms(ctx, lobbyRef, dms));
     // Keep "Free right now": whoever's free by their schedule and still hasn't answered.
     const freeNow = freeNowNotInLobby(ctx, fresh.players.map((p) => p.userId));
-    return update(lobbyMessage(ctx, fresh.session, summary, freeNow));
+    return update(lobbyMessage(ctx, fresh.session, summary, freeNow, partyOf(ctx, fresh.session, fresh.players, fresh.votes, null)));
   }
 
   if (kind === "wfh") {
@@ -305,27 +355,23 @@ async function onButton(i: Interaction, ctx: GroupContext, me: MemberView, defer
     return update(storedPlannedMessage(ctx, late.session, late.tally, result.party));
   }
 
-  // Locked-in posts: "Vote someone out" opens a private picker with a button per teammate.
+  // "Vote someone out" (lobby and locked-in posts) opens a private picker with a button per person.
   if (kind === "kickmenu") {
     const found = await getParty(ctx, a, me.id);
-    if (!found || !found.party.open) return ephemeral("This session is over.");
-    if (!found.party.party.includes(me.id)) return ephemeral("Only players in this session can vote someone out.");
+    const live = found?.session.kind === "live";
+    if (!found || !found.party.open) return ephemeral(live ? "That lobby is closed. Start a new one with /lfg." : "This session is over.");
+    if (!found.party.voters.includes(me.id)) {
+      return ephemeral(live ? "Only people who are in the lobby can vote. Tap I'm in first." : "Only players in this session can vote someone out.");
+    }
     return { type: 4, data: { ...kickPickerMessage(ctx, found.party, me.id), flags: EPHEMERAL } };
   }
 
-  // A vote from that private picker: update the picker, and the shared post shows the new count.
+  // A vote from that private picker (or /votekick's choice): update it, and the shared post shows the new count.
   if (kind === "kick") {
-    const sessionId = a;
     const targetId = b;
-    const result = await toggleKickVote(ctx, sessionId, me.id, targetId);
-    defer(() => syncPlannedMessage(ctx, sessionId));
-    const name = ctx.byId.get(targetId)?.name ?? "them";
-    const note = result.removed
-      ? `🚪 **${name}** was voted out.`
-      : result.voted
-        ? `🗳️ You voted to remove **${name}** (${result.party.votes[targetId] ?? 0} of ${result.party.needed}).`
-        : `↩️ Took back your vote for **${name}**.`;
-    return update(kickPickerMessage(ctx, result.party, me.id, note));
+    const result = await toggleKickVote(ctx, a, me.id, targetId);
+    defer(() => syncSessionPost(ctx, result.session));
+    return update(kickPickerMessage(ctx, result.party, me.id, kickNote(ctx.byId.get(targetId)?.name ?? "them", result, targetId)));
   }
 
   if (kind === "late") {
