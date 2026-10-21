@@ -422,7 +422,10 @@ export function feedbackModal(ctx: GroupContext, sessionId: string, targetId: st
   };
 }
 
-/** /summary: someone's numbers, and what teammates wrote about them (summed up by AI when it's set up). */
+/**
+ * /summary: someone's numbers, and what teammates wrote about them, summed up by AI when it's set up. It's
+ * posted in the channel, so notes are never quoted word for word (feedback is anonymous).
+ */
 export function playerReportMessage(m: MemberView, report: PlayerReport): DiscordMessage {
   const r = m.rep;
   const toTag = r.menace || !r.offenses ? "" : ` (${OFFENSES_FOR_TAG - r.offenses} more earns ${MENACE_TAG})`;
@@ -438,9 +441,11 @@ export function playerReportMessage(m: MemberView, report: PlayerReport): Discor
   } else if (report.ai === "empty") {
     lines.push("📝 No written feedback yet. Leave some with ⭐ Rate players on the lobby post.");
   } else {
+    const notes = `${n} anonymous note${n === 1 ? "" : "s"} so far`;
     lines.push(
-      report.ai === "off" ? "🤖 AI summaries are off (the app needs a GEMINI_API_KEY). Latest feedback:" : "🤖 The AI didn't answer this time. Latest feedback:",
-      ...report.notes.slice(0, 3).map((t) => `> ${t.replace(/\n+/g, " ").slice(0, 200)}`),
+      report.ai === "off"
+        ? `🤖 AI summaries aren't set up yet (the app needs a GEMINI_API_KEY). ${notes}.`
+        : `🤖 The AI didn't answer this time (it may be busy or over its daily limit). ${notes}: try again later.`,
     );
   }
   return { content: lines.join("\n").slice(0, 2000), allowed_mentions: { parse: [] } };

@@ -101,7 +101,8 @@ const ephemeral = (content: string): InteractionResponse => ({
   data: { content, flags: EPHEMERAL, allowed_mentions: { parse: [] } },
 });
 /** "Thinking…": Discord shows that until the reply is edited in (within 15 minutes). Only flags go with it. */
-const deferred = (flags = 0): InteractionResponse => ({ type: 5, data: { flags } as unknown as DiscordMessage });
+const deferred = (flags?: number): InteractionResponse =>
+  flags ? { type: 5, data: { flags } as unknown as DiscordMessage } : { type: 5 };
 /** Open a pop-up form. Typed like the other responses; Discord reads the form's fields from `data`. */
 const modal = (form: DiscordModal): InteractionResponse => ({ type: 9, data: form as unknown as DiscordMessage });
 
@@ -266,7 +267,7 @@ async function onCommand(i: Interaction, ctx: GroupContext, me: MemberView, defe
         }
         await editOriginal(i.application_id, i.token, msg);
       });
-      return deferred(EPHEMERAL); // only the person who asked sees it
+      return deferred(); // posted in the channel, for everyone
     }
 
     case "dinner":

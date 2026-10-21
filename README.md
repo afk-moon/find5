@@ -263,9 +263,10 @@ lobby on the Live page) lists everyone who joined it, except people who said “
   form; on the Live page, a text box.
 - Everything is taken while the lobby is open. `REPORTS_PER_OFFENSE` and `OFFENSES_FOR_TAG` are at the top
   of `src/engine/reputation.ts`.
-- `/summary @name` replies only to you: their 👍/👎, offenses and tags, plus an AI summary of the latest 60
-  notes about them. The AI is told never to quote anyone or guess who wrote what. It needs an AI key (see
-  [Deploying](#deploying)); without one, it shows the three latest notes instead.
+- `/summary @name` posts a report in the channel: their 👍/👎, offenses and tags, plus an AI summary of the
+  latest 60 notes about them. The AI is told never to quote anyone or guess who wrote what, and the report
+  never shows notes word for word. It needs an AI key (see [Deploying](#deploying)); without one, it shows
+  just the numbers. Each `/summary` is one AI request, and nothing else uses the AI.
 
 **Late reports.** These work on locked-in sessions, from the Windows page or the buttons on the
 session's Discord post.
@@ -323,8 +324,8 @@ Commands:
   games the people who join can play.
 - `/votekick @name`: vote someone out of the lobby or a locked-in session you're both in (AFK, late, or not
   coming). Only you see the reply.
-- `/summary @name`: their 👍/👎, bannable offenses and tags, and an AI summary of teammates' feedback. Only
-  you see it.
+- `/summary @name`: post their 👍/👎, bannable offenses and tags, and an AI summary of teammates'
+  feedback, in the channel.
 - `/dinner quick|long`
 - `/back 930` (or `9pm`, `21:30`, `noon`): you're away until then. Your availability for today changes to
   busy until then and free from then, so windows and pings use it right away. The time is read in your

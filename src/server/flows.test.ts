@@ -1330,7 +1330,7 @@ describe("lobby ratings, bannable offenses and /summary", () => {
     }
   });
 
-  it("/summary sums up the feedback with AI, privately, and says why when it can't", async () => {
+  it("/summary posts an AI summary of the feedback, never quotes it, and says why when it can't", async () => {
     const summary = async (target: string) => {
       const tasks: Array<() => Promise<unknown>> = [];
       const res = await handleInteraction(
@@ -1362,11 +1362,12 @@ describe("lobby ratings, bannable offenses and /summary", () => {
       delete process.env.GEMINI_API_KEY;
       delete process.env.AI_API_KEY;
       const off = await summary("1002");
-      expect(off).toMatchObject({ type: 5, data: { flags: 64 } }); // "thinking…", only for whoever asked
+      expect(off).toEqual({ type: 5 }); // "thinking…" in the channel, for everyone
       expect(edited()).toContain("📋 **Player report: Sam** · 🚨 Certified Menace");
       expect(edited()).toContain("👍 0 · 👎 0 · 🚫 3 bannable offenses");
-      expect(edited()).toContain("AI summaries are off");
-      expect(edited()).toMatch(/\n> (Note \d: great comms|Clutched)/);
+      expect(edited()).toContain("AI summaries aren't set up yet");
+      expect(edited()).toContain("6 anonymous notes so far");
+      expect(edited()).not.toMatch(/great comms|Clutched/); // public, so notes are never quoted
       expect(askedAi()).toBe(false);
 
       calls.length = 0;
