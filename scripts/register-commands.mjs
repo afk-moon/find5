@@ -24,7 +24,7 @@ const commands = [
   },
   {
     name: "summary",
-    description: "Post a player's 👍/👎, tags, and an AI summary of what teammates wrote about them",
+    description: "Post a player's 👍/👎, tags, and every feedback note teammates left about them",
     options: [{ type: USER, name: "player", description: "Whose report to see", required: true }],
   },
   {

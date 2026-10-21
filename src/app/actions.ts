@@ -316,7 +316,7 @@ export async function reportOffenseAction(sessionId: string, targetId: string): 
   }
 }
 
-/** Anonymous feedback about someone in the lobby (/summary sums it up). */
+/** Anonymous feedback about someone in the lobby (/summary shows it word for word). */
 export async function sendFeedbackAction(sessionId: string, targetId: string, text: string): Promise<ActionResult> {
   const { ctx, userId } = await requireViewer();
   try {

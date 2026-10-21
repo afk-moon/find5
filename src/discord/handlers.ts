@@ -26,7 +26,7 @@ import {
   toggleKickVote,
   type PartyState,
 } from "@/server/party";
-import { addFeedback, getLobbyRatings, playerReport, rate, reportOffense } from "@/server/reputation";
+import { addFeedback, feedbackAbout, getLobbyRatings, rate, reportOffense } from "@/server/reputation";
 import {
   activeLive,
   endSession,
@@ -46,13 +46,13 @@ import {
   kickChoiceMessage,
   kickPickerMessage,
   lobbyMessage,
-  playerReportMessage,
+  playerReportMessages,
   ratePanelMessage,
   storedPlannedMessage,
   windowsMessage,
   wfhVoteMessage,
 } from "./messages";
-import { appUrl, editOriginal, postFollowup, type DiscordMessage, type DiscordModal } from "./rest";
+import { appUrl, postFollowup, type DiscordMessage, type DiscordModal } from "./rest";
 
 interface DiscordUser {
   id: string;
@@ -100,9 +100,6 @@ const ephemeral = (content: string): InteractionResponse => ({
   type: 4,
   data: { content, flags: EPHEMERAL, allowed_mentions: { parse: [] } },
 });
-/** "Thinking…": Discord shows that until the reply is edited in (within 15 minutes). Only flags go with it. */
-const deferred = (flags?: number): InteractionResponse =>
-  flags ? { type: 5, data: { flags } as unknown as DiscordMessage } : { type: 5 };
 /** Open a pop-up form. Typed like the other responses; Discord reads the form's fields from `data`. */
 const modal = (form: DiscordModal): InteractionResponse => ({ type: 9, data: form as unknown as DiscordMessage });
 
@@ -253,21 +250,17 @@ async function onCommand(i: Interaction, ctx: GroupContext, me: MemberView, defe
     }
 
     case "summary": {
-      // "/summary player:@Sam": their numbers, and an AI write-up of the feedback teammates left about them.
+      // "/summary player:@Sam": their numbers, and every note teammates left about them, word for word.
       const target = ctx.members.find((m) => m.discordId === String(option("player") ?? ""));
       if (!target) return ephemeral(`I don't know them yet. They need to log in with Discord once at ${appUrl()}/login.`);
-      // The AI can take a few seconds and Discord wants an answer within 3: show "thinking…", then edit the report in.
-      defer(async () => {
-        let msg: DiscordMessage;
-        try {
-          msg = playerReportMessage(target, await playerReport(ctx, target));
-        } catch (err) {
-          console.error("[discord] /summary failed:", err);
-          msg = { content: "⚠️ Couldn't put that report together. Try again in a bit.", allowed_mentions: { parse: [] } };
-        }
-        await editOriginal(i.application_id, i.token, msg);
-      });
-      return deferred(); // posted in the channel, for everyone
+      const [first, ...more] = playerReportMessages(target, await feedbackAbout(ctx.group.id, target.id));
+      // A long history continues in follow-up posts, in order, once the reply is in.
+      if (more.length) {
+        defer(async () => {
+          for (const msg of more) await postFollowup(i.application_id, i.token, msg);
+        });
+      }
+      return reply(first); // in the channel, for everyone
     }
 
     case "dinner":
@@ -493,7 +486,7 @@ async function onForm(i: Interaction, ctx: GroupContext, me: MemberView) {
   if (kind === "fb") {
     const result = await addFeedback(ctx, sessionId, me.id, targetId, formValue(i, "text"));
     const name = ctx.byId.get(targetId)?.name ?? "them";
-    const note = `📝 Saved your note about **${name}**. It's anonymous; \`/summary\` sums it up.`;
+    const note = `📝 Saved your note about **${name}**. It's anonymous; \`/summary\` shows it word for word.`;
     // The form was opened from the private ratings panel, so this updates the panel.
     return update(ratePanelMessage(ctx, result.ratings, me.id, { focus: targetId, note }));
   }

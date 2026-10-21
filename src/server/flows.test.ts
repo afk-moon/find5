@@ -31,7 +31,7 @@ const { openLateVotes, toggleLateReport, getLateTally } = await import("./latene
 const { setAwayUntil, resolveBackTime } = await import("./away");
 const { freeNowNotInLobby, stackDms } = await import("./notify");
 const { getParty, toggleDropOut, toggleKickVote, kickVotesNeeded, partyOf } = await import("./party");
-const { rate, reportOffense, addFeedback, feedbackAbout, getLobbyRatings, FEEDBACK_MAX_CHARS } = await import("./reputation");
+const { rate, reportOffense, addFeedback, feedbackAbout, FEEDBACK_MAX_CHARS } = await import("./reputation");
 const { offensesFrom } = await import("@/engine/reputation");
 const {
   lobbyMessage,
@@ -44,10 +44,11 @@ const {
   storedPlannedMessage,
   mention,
   awayMessage,
+  playerReportMessages,
 } = await import("@/discord/messages");
 const { handleInteraction, handleAutocomplete } = await import("@/discord/handlers");
 const { getDb } = await import("@/db");
-const { memberProfiles, playSessions, playSessionPlayers } = await import("@/db/schema");
+const { memberProfiles, playSessions, playSessionPlayers, playerFeedback } = await import("@/db/schema");
 const { DEMO_GROUP_ID } = await import("@/db/seed");
 const { pattern, lateVotingState, resolvePattern, currentGamingDay, EMPTY_PATTERN } = await import("@/engine");
 const { and, eq } = await import("drizzle-orm");
@@ -1342,73 +1343,72 @@ describe("lobby ratings, bannable offenses and /summary", () => {
     }
   });
 
-  it("/summary posts an AI summary of the feedback, never quotes it, and says why when it can't", async () => {
+  it("/summary posts every note about them, word for word, newest first", async () => {
     const summary = async (target: string) => {
       const tasks: Array<() => Promise<unknown>> = [];
       const res = await handleInteraction(
         { ...base, type: 2, member: user("1001"), data: { name: "summary", options: [{ name: "player", value: target }] } },
         (t) => tasks.push(t),
       );
-      for (const t of tasks) await t();
-      return res;
+      return { ...res, tasks };
     };
     const unknown = await summary("999");
     expect(unknown).toMatchObject({ type: 4, data: { flags: 64 } });
     expect(unknown.data!.content).toMatch(/I don't know them yet/);
 
-    // Stand-ins for Discord (editing the "thinking…" reply) and the AI.
-    const calls: Array<{ url: string; body: { model?: string; messages?: Array<{ content: string }>; content?: string } }> = [];
-    let aiStatus = 200;
+    const sam = await summary("1002");
+    expect(sam.type).toBe(4);
+    expect(sam.data!.flags).toBe(4); // in the channel for everyone (64 is private), no link previews
+    expect(sam.data!.allowed_mentions).toEqual({ parse: [] });
+    const text = sam.data!.content;
+    expect(text).toContain("📋 **Player report: Sam** · 🚨 Certified Menace");
+    expect(text).toContain("👍 0 · 👎 0 · 🚫 3 bannable offenses");
+    expect(text).toContain("📝 **Feedback** (6 notes, newest first):");
+    expect(text).toContain("\n- Clutched the last round but tilted after losses");
+    for (const n of [1, 2, 3, 4, 5]) expect(text).toContain(`\n- Note ${n}: great comms`);
+    expect(text.indexOf("Clutched")).toBeLessThan(text.indexOf("Note 5")); // newest first
+    expect(text.indexOf("Note 5")).toBeLessThan(text.indexOf("Note 1"));
+    expect(sam.tasks).toHaveLength(0); // it all fits in one post
+    expect((await summary("1003")).data!.content).toContain("No written feedback yet"); // Dev, so far
+
+    // A long history continues in follow-up messages, in order, every note once.
+    const lobby = await startFreshLive(ctx, "demo-maya");
+    await endSession(ctx, lobby.sessionId);
+    const db = await getDb();
+    const t0 = Date.now();
+    for (let n = 0; n < 30; n++) {
+      const note = `Note ${n}: ${"so many words ".repeat(10).trim()}`;
+      await db.insert(playerFeedback).values({ sessionId: lobby.sessionId, authorId: "demo-maya", targetId: "demo-dev", text: note, createdAt: new Date(t0 + n) });
+    }
+    const followUps: string[] = [];
     const realFetch = globalThis.fetch;
     globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
-      const u = String(url);
-      calls.push({ url: u, body: init?.body ? JSON.parse(String(init.body)) : {} });
-      if (!u.includes("/chat/completions")) return new Response(null, { status: 204 });
-      if (aiStatus !== 200) return new Response("overloaded", { status: aiStatus });
-      return Response.json({ choices: [{ message: { content: "Sam has great comms and clutches rounds, but tilts after losses." } }] });
+      if (String(url).endsWith("/webhooks/app/t")) followUps.push(JSON.parse(String(init!.body)).content);
+      return new Response("{}", { status: 200 });
     }) as typeof fetch;
-    const edited = () => calls.find((c) => c.url.endsWith("/webhooks/app/t/messages/@original"))!.body.content!;
-    const askedAi = () => calls.some((c) => c.url.includes("/chat/completions"));
-    const quiet = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
-      delete process.env.GEMINI_API_KEY;
-      delete process.env.AI_API_KEY;
-      const off = await summary("1002");
-      expect(off).toEqual({ type: 5 }); // "thinking…" in the channel, for everyone
-      expect(edited()).toContain("📋 **Player report: Sam** · 🚨 Certified Menace");
-      expect(edited()).toContain("👍 0 · 👎 0 · 🚫 3 bannable offenses");
-      expect(edited()).toContain("AI summaries aren't set up yet");
-      expect(edited()).toContain("6 anonymous notes so far");
-      expect(edited()).not.toMatch(/great comms|Clutched/); // public, so notes are never quoted
-      expect(askedAi()).toBe(false);
-
-      calls.length = 0;
-      process.env.GEMINI_API_KEY = "test-key";
-      await summary("1002");
-      const ai = calls.find((c) => c.url.includes("/chat/completions"))!;
-      expect(ai.url).toBe("https://generativelanguage.googleapis.com/v1beta/openai/chat/completions");
-      expect(ai.body.model).toBe("gemini-3.8-flash");
-      const prompt = ai.body.messages!.at(-1)!.content;
-      expect(prompt).toContain("Player: Sam");
-      expect(prompt).toContain("Bannable offenses: 3");
-      expect(prompt).toContain("- Clutched the last round");
-      expect(edited()).toContain("Sam has great comms and clutches rounds");
-      expect(edited()).toContain("From 6 anonymous notes, summed up by AI");
-
-      calls.length = 0;
-      await summary("1003"); // Dev: nothing written about him yet
-      expect(askedAi()).toBe(false);
-      expect(edited()).toContain("No written feedback yet");
-
-      calls.length = 0;
-      aiStatus = 503;
-      await summary("1002");
-      expect(edited()).toContain("The AI didn't answer this time");
+      const dev = await summary("1003");
+      expect(dev.tasks).toHaveLength(1);
+      for (const task of dev.tasks) await task();
+      const posts = [dev.data!.content, ...followUps];
+      expect(posts.length).toBeGreaterThan(1);
+      for (const p of posts) expect(p.length).toBeLessThanOrEqual(2000);
+      const all = posts.join("\n");
+      for (let n = 0; n < 30; n++) expect(all.split(`- Note ${n}: `).length - 1).toBe(1);
+      expect(all.indexOf("- Note 29: ")).toBeLessThan(all.indexOf("- Note 0: "));
     } finally {
       globalThis.fetch = realFetch;
-      delete process.env.GEMINI_API_KEY;
-      quiet.mockRestore();
     }
+
+    // Notes show exactly as typed: no formatting, links or mentions sneak in. A huge history stops at 10 posts.
+    const kai = ctx.byId.get("demo-kai")!;
+    expect(playerReportMessages(kai, ["**wow** <@1> [x](y) _hi_"])[0].content).toContain(
+      String.raw`- \*\*wow\*\* \<@1> \[x\]\(y\) \_hi\_`,
+    );
+    const huge = playerReportMessages(kai, Array.from({ length: 300 }, (_, n) => `${n} ${"x".repeat(190)}`));
+    expect(huge).toHaveLength(10);
+    for (const msg of huge) expect(msg.content.length).toBeLessThanOrEqual(2000);
+    expect(huge.at(-1)!.content).toMatch(/…and \d+ older notes \(too many to post\)\.$/);
   });
 
   it("works from Discord: a private panel, and a pop-up form for feedback", async () => {

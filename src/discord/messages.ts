@@ -17,7 +17,7 @@ import type { AwayResult } from "@/server/away";
 import { mainGame, sessionGame, type GameContext, type GameView, type GroupContext, type MemberView } from "@/server/context";
 import type { LateTally } from "@/server/lateness";
 import type { PartyState } from "@/server/party";
-import { FEEDBACK_MAX_CHARS, type LobbyRatings, type PlayerReport } from "@/server/reputation";
+import { FEEDBACK_MAX_CHARS, type LobbyRatings } from "@/server/reputation";
 import { gamesInLobby, progressText, type GameProgress, type LiveSummary, type PlaySession } from "@/server/sessions";
 import type { WfhState } from "@/server/wfh";
 import type { ActionRow, Button, DiscordMessage, DiscordModal } from "./rest";
@@ -395,7 +395,7 @@ export function ratePanelMessage(
     : others.length
       ? `⭐ **Rate players** (only you see this). 👍/👎 as often as every ${cooldown} per person; the numbers are their totals. ` +
         `🚫 **Bannable offense** (also every ${cooldown}): every ${REPORTS_PER_OFFENSE} reports from ${REPORTS_PER_OFFENSE} different people in a lobby make one offense, and ${OFFENSES_FOR_TAG} offenses earn ${MENACE_TAG}. ` +
-        "💬 Feedback is anonymous; `/summary @name` sums it up."
+        "💬 Feedback is anonymous; `/summary @name` shows it word for word."
       : "Nobody else is in the lobby yet.";
   return { content: [note, help].filter(Boolean).join("\n"), components: r.open ? rows : [], allowed_mentions: { parse: [] } };
 }
@@ -426,33 +426,72 @@ export function feedbackModal(ctx: GroupContext, sessionId: string, targetId: st
   };
 }
 
+/** Discord's longest message. */
+const MESSAGE_MAX_CHARS = 2000;
+/** Most posts one /summary makes (its reply and follow-ups), so a long history can't flood the channel. */
+export const SUMMARY_MAX_POSTS = 10;
+/** Message flag: no link previews (links in a note still work). */
+const SUPPRESS_EMBEDS = 1 << 2;
+
 /**
- * /summary: someone's numbers, and what teammates wrote about them, summed up by AI when it's set up. It's
- * posted in the channel, so notes are never quoted word for word (feedback is anonymous).
+ * Text that shows in Discord exactly as typed: no bold, spoilers, links, mentions, headings or lists. Line
+ * breaks become spaces (so a note stays one bullet), and web addresses are left alone so they still work.
  */
-export function playerReportMessage(m: MemberView, report: PlayerReport): DiscordMessage {
+function asTyped(text: string): string {
+  return text
+    .replace(/\s*[\r\n]\s*/g, " ")
+    .split(/(https?:\/\/\S+)/)
+    .map((part, i) => (i % 2 ? part : part.replace(/[\\*_~`|<[\]()]/g, "\\$&")))
+    .join("")
+    .replace(/^[-+>#]/, "\\$&")
+    .replace(/^(\d+)\./, "$1\\.");
+}
+
+/**
+ * /summary: someone's numbers, then every note teammates left about them, word for word and newest first
+ * (never who wrote it). A long history continues over more posts, up to SUMMARY_MAX_POSTS; the last one
+ * then says how many older notes didn't fit.
+ */
+export function playerReportMessages(m: MemberView, notes: readonly string[]): DiscordMessage[] {
   const r = m.rep;
   const toTag = r.menace || !r.offenses ? "" : ` (${OFFENSES_FOR_TAG - r.offenses} more earns ${MENACE_TAG})`;
   const tags = [r.menace ? MENACE_TAG : null, m.lateness.frequentlyLate ? "⏰ Frequently late" : null].filter(Boolean);
-  const lines = [
-    `📋 **Player report: ${m.name}**${tags.length ? ` · ${tags.join(" · ")}` : ""}`,
-    `👍 ${r.up} · 👎 ${r.down} · 🚫 ${r.offenses} bannable offense${r.offenses === 1 ? "" : "s"}${toTag}`,
-    "",
+  const n = notes.length;
+  const posts: string[][] = [
+    [
+      `📋 **Player report: ${m.name}**${tags.length ? ` · ${tags.join(" · ")}` : ""}`,
+      `👍 ${r.up} · 👎 ${r.down} · 🚫 ${r.offenses} bannable offense${r.offenses === 1 ? "" : "s"}${toTag}`,
+      "",
+      n
+        ? `📝 **Feedback** (${n} note${n === 1 ? "" : "s"}, newest first):`
+        : "📝 No written feedback yet. Leave some with ⭐ Rate players on the lobby post.",
+    ],
   ];
-  const n = report.notes.length;
-  if (report.ai === "ok" && report.summary) {
-    lines.push(report.summary.slice(0, 1500), "", `-# From ${n} anonymous note${n === 1 ? "" : "s"}, summed up by AI. Take it with a grain of salt.`);
-  } else if (report.ai === "empty") {
-    lines.push("📝 No written feedback yet. Leave some with ⭐ Rate players on the lobby post.");
-  } else {
-    const notes = `${n} anonymous note${n === 1 ? "" : "s"} so far`;
-    lines.push(
-      report.ai === "off"
-        ? `🤖 AI summaries aren't set up yet (the app needs a GEMINI_API_KEY). ${notes}.`
-        : `🤖 The AI didn't answer this time (it may be busy or over its daily limit). ${notes}: try again later.`,
-    );
+  let size = posts[0].join("\n").length; // of the post being filled
+  let shown = 0;
+  for (const note of notes) {
+    const line = `- ${asTyped(note)}`.slice(0, MESSAGE_MAX_CHARS);
+    if (size + 1 + line.length > MESSAGE_MAX_CHARS) {
+      if (posts.length === SUMMARY_MAX_POSTS) break;
+      posts.push([]);
+      size = -1; // no line break before a post's first line
+    }
+    posts.at(-1)!.push(line);
+    size += 1 + line.length;
+    shown++;
   }
-  return { content: lines.join("\n").slice(0, 2000), allowed_mentions: { parse: [] } };
+  let left = n - shown;
+  if (left) {
+    // Out of posts: make room in the last one for a line saying how many older notes didn't fit.
+    const last = posts.at(-1)!;
+    const more = () => `-# …and ${left} older note${left === 1 ? "" : "s"} (too many to post).`;
+    while (last.length && size + 1 + more().length > MESSAGE_MAX_CHARS) {
+      size -= 1 + last.pop()!.length;
+      left++;
+    }
+    last.push(more());
+  }
+  return posts.map((lines) => ({ content: lines.join("\n"), allowed_mentions: { parse: [] }, flags: SUPPRESS_EMBEDS }));
 }
 
 /**

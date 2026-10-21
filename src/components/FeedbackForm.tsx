@@ -4,7 +4,7 @@ import { useState, useTransition } from "react";
 import { sendFeedbackAction } from "@/app/actions";
 import type { ActionResult } from "@/lib/action-result";
 
-/** Free-text feedback about someone in the lobby. Anonymous; /summary in Discord sums it up with AI. */
+/** Free-text feedback about someone in the lobby. Anonymous; /summary in Discord shows it word for word. */
 export function FeedbackForm({
   sessionId,
   people,
@@ -53,7 +53,7 @@ export function FeedbackForm({
         <button className="btn btn-primary" disabled={pending || !text.trim()}>
           {pending ? "Sending…" : "Send"}
         </button>
-        <span className="text-xs text-muted">Anonymous. /summary in Discord sums it up.</span>
+        <span className="text-xs text-muted">Anonymous. /summary in Discord shows it word for word.</span>
         {result && !result.ok && <span className="text-xs text-val">{result.error}</span>}
         {result?.ok && result.message && <span className="text-xs text-free">{result.message}</span>}
       </div>

@@ -365,7 +365,7 @@ export const offenseReports = pgTable(
   (t) => [index("offense_reports_session_idx").on(t.sessionId)],
 );
 
-/** Free-text feedback about a lobby member. Anonymous: /summary sums it up with AI and never says who wrote what. */
+/** Free-text feedback about a lobby member. Anonymous: /summary shows it word for word but never who wrote it. */
 export const playerFeedback = pgTable("player_feedback", {
   id: text("id").primaryKey().$defaultFn(uuid),
   sessionId: text("session_id")

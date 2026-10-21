@@ -64,24 +64,33 @@ export const postMessage = (channelId: string, msg: DiscordMessage) =>
 export const editMessage = (channelId: string, messageId: string, msg: Partial<DiscordMessage>) =>
   discordFetch<{ id: string }>(`/channels/${channelId}/messages/${messageId}`, "PATCH", msg);
 
-/** Follow-up message on an interaction (uses the interaction token; no bot token needed). */
+/**
+ * Follow-up message on an interaction (uses the interaction token; no bot token needed). Several in a row
+ * (a long /summary) can hit Discord's rate limit: then it waits as long as Discord asks and tries again.
+ */
 export async function postFollowup(applicationId: string, interactionToken: string, msg: DiscordMessage) {
-  const res = await fetch(`${API}/webhooks/${applicationId}/${interactionToken}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(msg),
-  });
-  if (!res.ok) throw new Error(`Discord follow-up → ${res.status} ${await res.text()}`);
+  for (let attempt = 1; ; attempt++) {
+    const res = await fetch(`${API}/webhooks/${applicationId}/${interactionToken}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(msg),
+    });
+    if (res.ok) return;
+    const body = await res.text();
+    if (res.status !== 429 || attempt === 3) throw new Error(`Discord follow-up → ${res.status} ${body}`);
+    await new Promise((resolve) => setTimeout(resolve, retryAfterMs(res, body)));
+  }
 }
 
-/** Replace the reply to an interaction, e.g. a deferred "thinking…" one (interaction token; no bot token needed). */
-export async function editOriginal(applicationId: string, interactionToken: string, msg: DiscordMessage) {
-  const res = await fetch(`${API}/webhooks/${applicationId}/${interactionToken}/messages/@original`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(msg),
-  });
-  if (!res.ok) throw new Error(`Discord edit reply → ${res.status} ${await res.text()}`);
+/** How long Discord asks to wait after a 429 (it says in seconds), at most 10 s. */
+function retryAfterMs(res: Response, body: string): number {
+  let seconds = Number(res.headers.get("retry-after"));
+  try {
+    seconds = Number(JSON.parse(body).retry_after) || seconds;
+  } catch {
+    // not JSON: go by the header
+  }
+  return Math.min(seconds > 0 ? seconds : 1, 10) * 1000;
 }
 
 /** A text box in a pop-up form. */

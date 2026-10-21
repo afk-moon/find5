@@ -24,7 +24,7 @@ line up their work-from-home days. It's a web app plus an optional Discord bot.
   out** too, for someone who tapped in but isn't around, and `/votekick @name` works for both.
 - **Ratings & feedback:** in a lobby, 👍/👎 your teammates and report 🚫 bannable offenses, as often as every
   2 minutes per person (every 3 reports from 3 different people make an offense, and 3 offenses earn a comic
-  🚨 **Certified Menace** tag), and leave anonymous feedback. `/summary @name` shows someone's numbers and an AI summary of what people wrote.
+  🚨 **Certified Menace** tag), and leave anonymous feedback. `/summary @name` shows someone's numbers and every note people wrote about them.
 - **Late reports:** once a locked-in session starts, teammates can report who was late. Anyone late in
   more than half of their last 10 sessions gets a ⏰ **Frequently late** tag next to their name.
 - **Discord:** login, slash commands, lobby buttons, announcements, and Scheduled Events.
@@ -265,10 +265,10 @@ lobby on the Live page) lists everyone who joined it, except people who said “
   form; on the Live page, a text box.
 - Everything is taken while the lobby is open, and a new lobby starts the waits fresh. `RATING_COOLDOWN_MS`,
   `REPORTS_PER_OFFENSE` and `OFFENSES_FOR_TAG` are at the top of `src/engine/reputation.ts`.
-- `/summary @name` posts a report in the channel: their 👍/👎, offenses and tags, plus an AI summary of the
-  latest 60 notes about them. The AI is told never to quote anyone or guess who wrote what, and the report
-  never shows notes word for word. It needs an AI key (see [Deploying](#deploying)); without one, it shows
-  just the numbers. Each `/summary` is one AI request, and nothing else uses the AI.
+- `/summary @name` posts a report in the channel: their 👍/👎, offenses and tags, then every feedback note
+  about them as a bulleted list, word for word and newest first, without who wrote it. Notes show exactly as
+  typed (no formatting, pings or link previews; line breaks become spaces). A long history continues in
+  follow-up posts, up to 10 (`SUMMARY_MAX_POSTS` in `src/discord/messages.ts`).
 
 **Late reports.** These work on locked-in sessions, from the Windows page or the buttons on the
 session's Discord post.
@@ -326,8 +326,8 @@ Commands:
   games the people who join can play.
 - `/votekick @name`: vote someone out of the lobby or a locked-in session you're both in (AFK, late, or not
   coming). Only you see the reply.
-- `/summary @name`: post their 👍/👎, bannable offenses and tags, and an AI summary of teammates'
-  feedback, in the channel.
+- `/summary @name`: post their 👍/👎, bannable offenses and tags, and every feedback note teammates left
+  about them, in the channel.
 - `/dinner quick|long`
 - `/back 930` (or `9pm`, `21:30`, `noon`): you're away until then. Your availability for today changes to
   busy until then and free from then, so windows and pings use it right away. The time is read in your
@@ -373,7 +373,6 @@ This works on any Node host with a Postgres database. On Vercel with Neon:
    | `APP_URL` | Your site's address, e.g. `https://your-project.vercel.app` (no trailing slash) |
    | `AUTH_SECRET` | Any long random string, e.g. from `node -e "console.log(crypto.randomUUID()+crypto.randomUUID())"` |
    | `CRON_SECRET` | Another random string (protects the daily job) |
-   | `GEMINI_API_KEY` | For `/summary`'s AI summaries: a free key from <https://aistudio.google.com/apikey>. Optional |
    | Discord variables | Only if you use Discord (see [Discord setup](#discord-setup)) |
    | `SEED_DEMO` | `1` only if you want the demo friends in the hosted database |
    | `ALLOW_DEV_LOGIN` | `1` only to test without Discord login. Anyone with the link can then sign in as anyone |
