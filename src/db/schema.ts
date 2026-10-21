@@ -319,3 +319,59 @@ export const kickVotes = pgTable(
   },
   (t) => [primaryKey({ columns: [t.sessionId, t.voterId, t.targetId] })],
 );
+
+/** 👍 (1) or 👎 (-1) from one lobby member to another: one per teammate per lobby. Shown as totals only. */
+export const playerRatings = pgTable(
+  "player_ratings",
+  {
+    sessionId: text("session_id")
+      .notNull()
+      .references(() => playSessions.id, { onDelete: "cascade" }),
+    raterId: text("rater_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    targetId: text("target_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    value: integer("value").notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [primaryKey({ columns: [t.sessionId, t.raterId, t.targetId] })],
+);
+
+/**
+ * "Bannable offense" reports in a lobby. Enough reports about the same person in one lobby make one offense
+ * (see src/engine/reputation.ts). Shown as counts only, so reporters stay anonymous.
+ */
+export const offenseReports = pgTable(
+  "offense_reports",
+  {
+    sessionId: text("session_id")
+      .notNull()
+      .references(() => playSessions.id, { onDelete: "cascade" }),
+    reporterId: text("reporter_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    targetId: text("target_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    createdAt: createdAt(),
+  },
+  (t) => [primaryKey({ columns: [t.sessionId, t.reporterId, t.targetId] })],
+);
+
+/** Free-text feedback about a lobby member. Anonymous: /summary sums it up with AI and never says who wrote what. */
+export const playerFeedback = pgTable("player_feedback", {
+  id: text("id").primaryKey().$defaultFn(uuid),
+  sessionId: text("session_id")
+    .notNull()
+    .references(() => playSessions.id, { onDelete: "cascade" }),
+  authorId: text("author_id")
+    .notNull()
+    .references(() => user.id, { onDelete: "cascade" }),
+  targetId: text("target_id")
+    .notNull()
+    .references(() => user.id, { onDelete: "cascade" }),
+  text: text("text").notNull(),
+  createdAt: createdAt(),
+});

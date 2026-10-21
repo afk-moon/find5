@@ -74,6 +74,34 @@ export async function postFollowup(applicationId: string, interactionToken: stri
   if (!res.ok) throw new Error(`Discord follow-up → ${res.status} ${await res.text()}`);
 }
 
+/** Replace the reply to an interaction, e.g. a deferred "thinking…" one (interaction token; no bot token needed). */
+export async function editOriginal(applicationId: string, interactionToken: string, msg: DiscordMessage) {
+  const res = await fetch(`${API}/webhooks/${applicationId}/${interactionToken}/messages/@original`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(msg),
+  });
+  if (!res.ok) throw new Error(`Discord edit reply → ${res.status} ${await res.text()}`);
+}
+
+/** A text box in a pop-up form. */
+export interface TextInput {
+  type: 4;
+  custom_id: string;
+  label: string;
+  style: 1 | 2; // short, paragraph
+  min_length?: number;
+  max_length?: number;
+  required?: boolean;
+  placeholder?: string;
+}
+/** A pop-up form ("modal") opened from a button. Its answers come back as a type 5 interaction. */
+export interface DiscordModal {
+  custom_id: string;
+  title: string;
+  components: Array<{ type: 1; components: TextInput[] }>;
+}
+
 /**
  * DM someone (by Discord user id). Works for anyone who shares a server with the bot, unless they turned off
  * "Allow direct messages from server members"; then Discord refuses (error 50007).

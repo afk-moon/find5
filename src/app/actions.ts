@@ -33,6 +33,7 @@ import {
   syncWfhVote,
 } from "@/server/notify";
 import { toggleDropOut, toggleKickVote } from "@/server/party";
+import { addFeedback, rate, toggleOffense } from "@/server/reputation";
 import { SESSION_COOKIE } from "@/server/session-cookie";
 import {
   cancelSession,
@@ -274,6 +275,46 @@ export async function liveAction(sessionId: string, action: LiveAction): Promise
     await syncLobby(ctx, sessionId, { before, actorId: userId });
     refreshAll();
     return { ok: true };
+  } catch (e) {
+    return actionError(e);
+  }
+}
+
+// ─── Lobby ratings ─────────────────────────────────────────────────────────────────────────
+
+/** 👍 (1) or 👎 (-1) someone in the lobby; the same one again takes it back. */
+export async function rateAction(sessionId: string, targetId: string, value: number): Promise<ActionResult> {
+  const { ctx, userId } = await requireViewer();
+  try {
+    await rate(ctx, sessionId, userId, targetId, value > 0 ? 1 : -1);
+    refreshAll();
+    return { ok: true };
+  } catch (e) {
+    return actionError(e);
+  }
+}
+
+/** Report someone in the lobby for a bannable offense (tap again to take it back). */
+export async function reportOffenseAction(sessionId: string, targetId: string): Promise<ActionResult> {
+  const { ctx, userId } = await requireViewer();
+  try {
+    const { reported, counts, changed } = await toggleOffense(ctx, sessionId, userId, targetId);
+    // Their tag can change, and names on the lobby's Discord post show it.
+    if (changed) await syncLobby(await loadGroupContext(ctx.group.id), sessionId);
+    refreshAll();
+    return { ok: true, message: reported && changed && counts ? "That makes it a bannable offense" : undefined };
+  } catch (e) {
+    return actionError(e);
+  }
+}
+
+/** Anonymous feedback about someone in the lobby (/summary sums it up). */
+export async function sendFeedbackAction(sessionId: string, targetId: string, text: string): Promise<ActionResult> {
+  const { ctx, userId } = await requireViewer();
+  try {
+    await addFeedback(ctx, sessionId, userId, targetId, text);
+    refreshAll();
+    return { ok: true, message: "Saved. It's anonymous." };
   } catch (e) {
     return actionError(e);
   }

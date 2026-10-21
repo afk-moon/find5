@@ -11,20 +11,24 @@ import {
   fmtWeekdayLong,
   zoneAbbr,
 } from "@/lib/format";
+import { MENACE_TAG, NO_REPUTATION, OFFENSES_FOR_TAG, REPORTS_PER_OFFENSE } from "@/engine/reputation";
 import { partyLabel } from "@/lib/games";
 import type { AwayResult } from "@/server/away";
 import { mainGame, sessionGame, type GameContext, type GameView, type GroupContext, type MemberView } from "@/server/context";
 import type { LateTally } from "@/server/lateness";
 import type { PartyState } from "@/server/party";
+import { FEEDBACK_MAX_CHARS, type LobbyRatings, type PlayerReport } from "@/server/reputation";
 import { gamesInLobby, progressText, type GameProgress, type LiveSummary, type PlaySession } from "@/server/sessions";
 import type { WfhState } from "@/server/wfh";
-import type { ActionRow, Button, DiscordMessage } from "./rest";
+import type { ActionRow, Button, DiscordMessage, DiscordModal } from "./rest";
 
 const NO_PINGS = { parse: [] as string[] };
 
 const LATE_TAG = " (⏰ frequently late)";
 export const mention = (m?: MemberView) =>
-  !m ? "someone" : `${m.discordId ? `<@${m.discordId}>` : `**${m.name}**`}${m.lateness.frequentlyLate ? LATE_TAG : ""}`;
+  !m
+    ? "someone"
+    : `${m.discordId ? `<@${m.discordId}>` : `**${m.name}**`}${m.lateness.frequentlyLate ? LATE_TAG : ""}${m.rep.menace ? ` (${MENACE_TAG})` : ""}`;
 const names = (ctx: GroupContext, ids: readonly string[]) => ids.map((id) => mention(ctx.byId.get(id))).join(", ");
 export const discordIdsOf = (ctx: GroupContext, ids: readonly string[]) =>
   ids.map((id) => ctx.byId.get(id)?.discordId).filter((d): d is string => !!d);
@@ -322,7 +326,10 @@ export function lobbyMessage(
           },
           {
             type: 1,
-            components: [{ type: 2, style: 2, label: "Vote someone out", emoji: { name: "🗳️" }, custom_id: `kickmenu:${id}` }],
+            components: [
+              { type: 2, style: 2, label: "Vote someone out", emoji: { name: "🗳️" }, custom_id: `kickmenu:${id}` },
+              { type: 2, style: 2, label: "Rate players", emoji: { name: "⭐" }, custom_id: `rate:${id}` },
+            ],
           },
         ]
       : [];
@@ -331,6 +338,112 @@ export function lobbyMessage(
     components,
     allowed_mentions: { users: active ? discordIdsOf(ctx, freeNow) : [] },
   };
+}
+
+/**
+ * The private ratings panel (only the viewer sees it): a row per person with 👍/👎 (labels show their totals
+ * over every lobby), 🚫 bannable offense (reports in this lobby) and 💬 feedback. Up to 5 people fit; more
+ * get pages of 4 with Previous/Next. It opens on `page`, or on the page with `focus` (whoever was just rated).
+ */
+export function ratePanelMessage(
+  ctx: GroupContext,
+  r: LobbyRatings,
+  viewerId: string,
+  { page = 0, focus, note }: { page?: number; focus?: string; note?: string } = {},
+): DiscordMessage {
+  const others = r.people.filter((id) => id !== viewerId);
+  const perPage = others.length <= 5 ? 5 : 4;
+  const pages = Math.max(1, Math.ceil(others.length / perPage));
+  const at = focus && others.includes(focus) ? Math.floor(others.indexOf(focus) / perPage) : page;
+  const p = Math.min(Math.max(0, at), pages - 1);
+  const rows: ActionRow[] = others.slice(p * perPage, (p + 1) * perPage).map((id) => {
+    const t = r.totals[id] ?? NO_REPUTATION;
+    const vote = r.mine[id];
+    const name = (ctx.byId.get(id)?.name ?? "someone").slice(0, 40);
+    const notes = r.myNotes[id] ?? 0;
+    return {
+      type: 1,
+      components: [
+        { type: 2, style: vote === 1 ? 3 : 2, emoji: { name: "👍" }, label: `${name}${t.menace ? " 🚨" : ""} · ${t.up}`, custom_id: `up:${r.sessionId}:${id}` },
+        { type: 2, style: vote === -1 ? 4 : 2, emoji: { name: "👎" }, label: String(t.down), custom_id: `down:${r.sessionId}:${id}` },
+        {
+          type: 2,
+          style: r.myReports.includes(id) ? 4 : 2,
+          emoji: { name: "🚫" },
+          label: `${r.reports[id] ?? 0}/${REPORTS_PER_OFFENSE}`,
+          custom_id: `ban:${r.sessionId}:${id}`,
+        },
+        { type: 2, style: 2, emoji: { name: "💬" }, label: notes ? `Feedback (${notes})` : "Feedback", custom_id: `fbopen:${r.sessionId}:${id}` },
+      ],
+    };
+  });
+  if (pages > 1) {
+    rows.push({
+      type: 1,
+      components: [
+        { type: 2, style: 2, label: "◀ Previous", custom_id: `ratepage:${r.sessionId}:${p - 1}`, disabled: p === 0 },
+        { type: 2, style: 2, label: `Next ▶ (${p + 1}/${pages})`, custom_id: `ratepage:${r.sessionId}:${p + 1}`, disabled: p === pages - 1 },
+      ],
+    });
+  }
+  const help = !r.open
+    ? "That lobby is closed."
+    : others.length
+      ? `⭐ **Rate players** (only you see this). 👍/👎: one each per lobby, tap again to undo; the numbers are their totals. ` +
+        `🚫 **Bannable offense**: counts once ${REPORTS_PER_OFFENSE} people report the same person in a lobby, and ${OFFENSES_FOR_TAG} of those earn ${MENACE_TAG}. ` +
+        "💬 Feedback is anonymous; `/summary @name` sums it up."
+      : "Nobody else is in the lobby yet.";
+  return { content: [note, help].filter(Boolean).join("\n"), components: r.open ? rows : [], allowed_mentions: { parse: [] } };
+}
+
+/** The pop-up form for a feedback note about someone in the lobby. */
+export function feedbackModal(ctx: GroupContext, sessionId: string, targetId: string): DiscordModal {
+  const name = ctx.byId.get(targetId)?.name ?? "them";
+  return {
+    custom_id: `fb:${sessionId}:${targetId}`,
+    title: `Feedback for ${name}`.slice(0, 45),
+    components: [
+      {
+        type: 1,
+        components: [
+          {
+            type: 4,
+            custom_id: "text",
+            label: "How was playing with them? (anonymous)",
+            style: 2,
+            min_length: 2,
+            max_length: FEEDBACK_MAX_CHARS,
+            required: true,
+            placeholder: "Great comms, clutched the last round, a bit tilted after losses…",
+          },
+        ],
+      },
+    ],
+  };
+}
+
+/** /summary: someone's numbers, and what teammates wrote about them (summed up by AI when it's set up). */
+export function playerReportMessage(m: MemberView, report: PlayerReport): DiscordMessage {
+  const r = m.rep;
+  const toTag = r.menace || !r.offenses ? "" : ` (${OFFENSES_FOR_TAG - r.offenses} more earns ${MENACE_TAG})`;
+  const tags = [r.menace ? MENACE_TAG : null, m.lateness.frequentlyLate ? "⏰ Frequently late" : null].filter(Boolean);
+  const lines = [
+    `📋 **Player report: ${m.name}**${tags.length ? ` · ${tags.join(" · ")}` : ""}`,
+    `👍 ${r.up} · 👎 ${r.down} · 🚫 ${r.offenses} bannable offense${r.offenses === 1 ? "" : "s"}${toTag}`,
+    "",
+  ];
+  const n = report.notes.length;
+  if (report.ai === "ok" && report.summary) {
+    lines.push(report.summary.slice(0, 1500), "", `-# From ${n} anonymous note${n === 1 ? "" : "s"}, summed up by AI. Take it with a grain of salt.`);
+  } else if (report.ai === "empty") {
+    lines.push("📝 No written feedback yet. Leave some with ⭐ Rate players on the lobby post.");
+  } else {
+    lines.push(
+      report.ai === "off" ? "🤖 AI summaries are off (the app needs a GEMINI_API_KEY). Latest feedback:" : "🤖 The AI didn't answer this time. Latest feedback:",
+      ...report.notes.slice(0, 3).map((t) => `> ${t.replace(/\n+/g, " ").slice(0, 200)}`),
+    );
+  }
+  return { content: lines.join("\n").slice(0, 2000), allowed_mentions: { parse: [] } };
 }
 
 /**

@@ -2,6 +2,7 @@ import { eq } from "drizzle-orm";
 import { getDb } from "@/db";
 import { groups, playSessions, wfhVotes } from "@/db/schema";
 import type { Weekday } from "@/engine";
+import { REPORTS_PER_OFFENSE } from "@/engine/reputation";
 import { discordTs } from "@/lib/format";
 import { partyLabel } from "@/lib/games";
 import { setAwayUntil } from "@/server/away";
@@ -25,6 +26,7 @@ import {
   toggleKickVote,
   type PartyState,
 } from "@/server/party";
+import { addFeedback, getLobbyRatings, playerReport, rate, toggleOffense } from "@/server/reputation";
 import {
   activeLive,
   endSession,
@@ -40,14 +42,17 @@ import { clearBallot, ensureVote, getWfhState, toggleBallotDay, weekStartOf } fr
 import { upcomingWindows } from "@/server/windows";
 import {
   awayMessage,
+  feedbackModal,
   kickChoiceMessage,
   kickPickerMessage,
   lobbyMessage,
+  playerReportMessage,
+  ratePanelMessage,
   storedPlannedMessage,
   windowsMessage,
   wfhVoteMessage,
 } from "./messages";
-import { appUrl, postFollowup, type DiscordMessage } from "./rest";
+import { appUrl, editOriginal, postFollowup, type DiscordMessage, type DiscordModal } from "./rest";
 
 interface DiscordUser {
   id: string;
@@ -58,7 +63,7 @@ interface DiscordUser {
 export interface Interaction {
   id: string;
   application_id: string;
-  type: number; // 1 ping, 2 slash command, 3 button, 4 autocomplete
+  type: number; // 1 ping, 2 slash command, 3 button, 4 autocomplete, 5 form submitted
   token: string;
   guild_id?: string;
   channel_id?: string;
@@ -69,6 +74,11 @@ export interface Interaction {
     /** `focused` marks the option being typed in, for autocomplete. */
     options?: Array<{ name: string; value: string | number; focused?: boolean }>;
     custom_id?: string;
+    /** A submitted form's answers: rows of text boxes (newer forms wrap each box in a label instead). */
+    components?: Array<{
+      components?: Array<{ custom_id?: string; value?: string }>;
+      component?: { custom_id?: string; value?: string };
+    }>;
   };
   message?: { id: string; channel_id: string };
 }
@@ -90,6 +100,10 @@ const ephemeral = (content: string): InteractionResponse => ({
   type: 4,
   data: { content, flags: EPHEMERAL, allowed_mentions: { parse: [] } },
 });
+/** "Thinking…": Discord shows that until the reply is edited in (within 15 minutes). Only flags go with it. */
+const deferred = (flags = 0): InteractionResponse => ({ type: 5, data: { flags } as unknown as DiscordMessage });
+/** Open a pop-up form. Typed like the other responses; Discord reads the form's fields from `data`. */
+const modal = (form: DiscordModal): InteractionResponse => ({ type: 9, data: form as unknown as DiscordMessage });
 
 export async function handleInteraction(i: Interaction, defer: Defer): Promise<InteractionResponse> {
   if (i.type === 1) return { type: 1 }; // PING → PONG
@@ -103,6 +117,7 @@ export async function handleInteraction(i: Interaction, defer: Defer): Promise<I
   try {
     if (i.type === 2) return await onCommand(i, ctx, me, defer);
     if (i.type === 3) return await onButton(i, ctx, me, defer);
+    if (i.type === 5) return await onForm(i, ctx, me);
     return ephemeral("Unsupported interaction.");
   } catch (err) {
     return ephemeral(`⚠️ ${err instanceof Error ? err.message : "Something went wrong."}`);
@@ -234,6 +249,24 @@ async function onCommand(i: Interaction, ctx: GroupContext, me: MemberView, defe
       const result = await castKickVote(ctx, options[0].session.id, me.id, target.id);
       if (result.changed || result.removed) defer(() => syncSessionPost(ctx, result.session));
       return { type: 4, data: { ...kickPickerMessage(ctx, result.party, me.id, kickNote(target.name, result, target.id)), flags: EPHEMERAL } };
+    }
+
+    case "summary": {
+      // "/summary player:@Sam": their numbers, and an AI write-up of the feedback teammates left about them.
+      const target = ctx.members.find((m) => m.discordId === String(option("player") ?? ""));
+      if (!target) return ephemeral(`I don't know them yet. They need to log in with Discord once at ${appUrl()}/login.`);
+      // The AI can take a few seconds and Discord wants an answer within 3: show "thinking…", then edit the report in.
+      defer(async () => {
+        let msg: DiscordMessage;
+        try {
+          msg = playerReportMessage(target, await playerReport(ctx, target));
+        } catch (err) {
+          console.error("[discord] /summary failed:", err);
+          msg = { content: "⚠️ Couldn't put that report together. Try again in a bit.", allowed_mentions: { parse: [] } };
+        }
+        await editOriginal(i.application_id, i.token, msg);
+      });
+      return deferred(EPHEMERAL); // only the person who asked sees it
     }
 
     case "dinner":
@@ -374,6 +407,47 @@ async function onButton(i: Interaction, ctx: GroupContext, me: MemberView, defer
     return update(kickPickerMessage(ctx, result.party, me.id, kickNote(ctx.byId.get(targetId)?.name ?? "them", result, targetId)));
   }
 
+  // Lobby post: "⭐ Rate players" opens a private panel; the panel's buttons update it in place.
+  if (kind === "rate" || kind === "ratepage") {
+    const found = await getLobbyRatings(ctx, a, me.id);
+    if (!found) return ephemeral("That lobby is gone. Start a new one with /lfg.");
+    if (kind === "ratepage") return update(ratePanelMessage(ctx, found.ratings, me.id, { page: Number(b) || 0 }));
+    if (!found.ratings.open) return ephemeral("That lobby is closed. Start a new one with /lfg.");
+    if (!found.ratings.people.includes(me.id)) return ephemeral("Join the lobby first (tap I'm in) to rate people.");
+    return { type: 4, data: { ...ratePanelMessage(ctx, found.ratings, me.id), flags: EPHEMERAL } };
+  }
+
+  if (kind === "up" || kind === "down") {
+    const result = await rate(ctx, a, me.id, b, kind === "up" ? 1 : -1);
+    const name = ctx.byId.get(b)?.name ?? "them";
+    const note = result.value === 0 ? `↩️ Took back your vote for **${name}**.` : `${result.value === 1 ? "👍" : "👎"} for **${name}**.`;
+    return update(ratePanelMessage(ctx, result.ratings, me.id, { focus: b, note }));
+  }
+
+  if (kind === "ban") {
+    const result = await toggleOffense(ctx, a, me.id, b);
+    const name = ctx.byId.get(b)?.name ?? "them";
+    const n = result.ratings.reports[b] ?? 0;
+    const note = !result.reported
+      ? `↩️ Took back your report about **${name}**.`
+      : result.changed
+        ? `🚫 That's ${n} reports: it counts as a bannable offense for **${name}**.`
+        : result.counts
+          ? `🚫 Reported **${name}** (it already counts in this lobby).`
+          : `🚫 Reported **${name}** (${n} of ${REPORTS_PER_OFFENSE} reports needed).`;
+    // When an offense starts or stops counting, their tag can change, and names on the lobby post show it.
+    if (result.changed) defer(async () => syncLobby(await loadGroupContext(ctx.group.id), a));
+    return update(ratePanelMessage(ctx, result.ratings, me.id, { focus: b, note }));
+  }
+
+  if (kind === "fbopen") {
+    const found = await getLobbyRatings(ctx, a, me.id);
+    if (!found?.ratings.open) return ephemeral("That lobby is closed.");
+    const { people } = found.ratings;
+    if (b === me.id || !people.includes(me.id) || !people.includes(b)) return ephemeral("You can leave feedback about people in your lobby.");
+    return modal(feedbackModal(ctx, a, b));
+  }
+
   if (kind === "late") {
     const sessionId = a;
     const lateUserId = b;
@@ -404,4 +478,27 @@ async function onButton(i: Interaction, ctx: GroupContext, me: MemberView, defer
   }
 
   return ephemeral("Unknown button.");
+}
+
+/** A submitted pop-up form (type 5). */
+async function onForm(i: Interaction, ctx: GroupContext, me: MemberView) {
+  const [kind, sessionId, targetId] = (i.data?.custom_id ?? "").split(":");
+  if (kind === "fb") {
+    const result = await addFeedback(ctx, sessionId, me.id, targetId, formValue(i, "text"));
+    const name = ctx.byId.get(targetId)?.name ?? "them";
+    const note = `📝 Saved your note about **${name}**. It's anonymous; \`/summary\` sums it up.`;
+    // The form was opened from the private ratings panel, so this updates the panel.
+    return update(ratePanelMessage(ctx, result.ratings, me.id, { focus: targetId, note }));
+  }
+  return ephemeral("Unknown form.");
+}
+
+/** A text box's answer in a submitted form. */
+function formValue(i: Interaction, id: string): string {
+  for (const row of i.data?.components ?? []) {
+    for (const c of [...(row.components ?? []), ...(row.component ? [row.component] : [])]) {
+      if (c.custom_id === id) return String(c.value ?? "");
+    }
+  }
+  return "";
 }

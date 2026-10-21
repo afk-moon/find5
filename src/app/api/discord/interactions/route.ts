@@ -2,6 +2,9 @@ import { after } from "next/server";
 import { handleAutocomplete, handleInteraction, type Interaction } from "@/discord/handlers";
 import { verifyDiscordRequest } from "@/discord/verify";
 
+/** Seconds a request may run, follow-up work included (/summary waits on the AI after replying). */
+export const maxDuration = 60;
+
 /** Discord "Interactions Endpoint URL": slash commands and button clicks arrive here as signed POSTs. */
 export async function POST(req: Request) {
   const raw = await req.text();

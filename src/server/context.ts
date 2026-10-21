@@ -15,9 +15,11 @@ import {
   wfhDays,
 } from "@/db/schema";
 import { NO_LATE_STATS, lateStats, type LateStats } from "@/engine/lateness";
+import { NO_REPUTATION, type Reputation } from "@/engine/reputation";
 import type { HybridMode, MatchSettings, MemberInput, Weekday } from "@/engine/types";
 import { getSessionUserId } from "./auth";
 import { loadLateRecords, type LateRecord } from "./lateness";
+import { loadReputation } from "./reputation-stats";
 
 /** "Now" for the current request (server components render per request). */
 export function requestTime(): number {
@@ -48,6 +50,8 @@ export interface MemberView {
   games: string[];
   /** Late history over their recent locked-in sessions (drives the "frequently late" tag). */
   lateness: LateStats;
+  /** 👍/👎 from teammates in lobbies, and bannable offenses (enough of them earn a tag). */
+  rep: Reputation;
 }
 
 export interface GameView {
@@ -152,7 +156,7 @@ export async function loadGroupContext(groupId: string): Promise<GroupContext> {
   // Everything in one parallel round trip: per-member tables filter by the group's members via a subquery.
   const memberIds = () => db.select({ id: memberships.userId }).from(memberships).where(eq(memberships.groupId, groupId));
   const gameIds = () => db.select({ id: games.id }).from(games).where(eq(games.groupId, groupId));
-  const [[group], rows, patternRows, hybridRows, wfhRows, vacationRows, gameRows, playRows, lateRecords] =
+  const [[group], rows, patternRows, hybridRows, wfhRows, vacationRows, gameRows, playRows, lateRecords, reputation] =
     await Promise.all([
       db.select().from(groups).where(eq(groups.id, groupId)),
       db
@@ -180,6 +184,7 @@ export async function loadGroupContext(groupId: string): Promise<GroupContext> {
       db.select().from(games).where(eq(games.groupId, groupId)).orderBy(asc(games.createdAt), asc(games.name)),
       db.select().from(memberGames).where(inArray(memberGames.gameId, gameIds())),
       loadLateRecords(groupId, now),
+      loadReputation(db, groupId),
     ]);
   if (!group) throw new Error(`Group ${groupId} not found`);
   const late = lateStats(lateRecords, now);
@@ -207,6 +212,7 @@ export async function loadGroupContext(groupId: string): Promise<GroupContext> {
         .map((v) => ({ id: v.id, start: v.startDate, end: v.endDate })),
       games: [],
       lateness: late.get(r.id) ?? NO_LATE_STATS,
+      rep: reputation.get(r.id) ?? NO_REPUTATION,
     };
   });
 

@@ -43,6 +43,13 @@
       "when": 1792539476458,
       "tag": "0005_kicked_status",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1792543840986,
+      "tag": "0006_ratings_and_feedback",
+      "breakpoints": true
     }
   ]
 }

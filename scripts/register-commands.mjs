@@ -23,6 +23,11 @@ const commands = [
     options: [{ type: USER, name: "user", description: "Who to vote out", required: true }],
   },
   {
+    name: "summary",
+    description: "A player's 👍/👎, tags, and an AI summary of teammates' feedback (only you see it)",
+    options: [{ type: USER, name: "player", description: "Whose report to see", required: true }],
+  },
+  {
     name: "dinner",
     description: "Step away for dinner",
     options: [

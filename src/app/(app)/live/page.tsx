@@ -3,11 +3,13 @@ import { ActionButton } from "@/components/ActionButton";
 import { Avatar } from "@/components/Avatar";
 import { AutoRefresh } from "@/components/client";
 import { MemberName } from "@/components/LateTag";
+import { RatePlayers } from "@/components/RatePlayers";
 import { VoteOut } from "@/components/VoteOut";
 import { currentGamingDay, vacationOn } from "@/engine";
 import { fmtDate, fmtRelative, fmtTime, zoneAbbr } from "@/lib/format";
 import { mainGame, requestTime, requireMember, requireViewer, type GroupContext, type MemberView } from "@/server/context";
 import { partyOf } from "@/server/party";
+import { getLobbyRatings } from "@/server/reputation";
 import { activeLive, gamesInLobby, progressText, summarizeLive, type SessionWithPlayers } from "@/server/sessions";
 import { membersNow, type MemberNow } from "@/server/windows";
 
@@ -54,10 +56,12 @@ export default async function LivePage() {
     );
   }
 
+  const rated = await getLobbyRatings(ctx, live.session.id, me.id, now);
   return (
     <div className="mx-auto max-w-3xl space-y-5">
       <AutoRefresh seconds={10} />
       <LobbyCard live={live} ctx={ctx} me={me} zone={zone} now={now} statusOf={statusOf} />
+      {rated && <RatePlayers ctx={ctx} ratings={rated.ratings} viewerId={me.id} />}
     </div>
   );
 }

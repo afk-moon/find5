@@ -31,10 +31,12 @@ const { openLateVotes, toggleLateReport, getLateTally } = await import("./latene
 const { setAwayUntil, resolveBackTime } = await import("./away");
 const { freeNowNotInLobby, stackDms } = await import("./notify");
 const { getParty, toggleDropOut, toggleKickVote, kickVotesNeeded, partyOf } = await import("./party");
+const { rate, toggleOffense, addFeedback, feedbackAbout, getLobbyRatings, FEEDBACK_MAX_CHARS } = await import("./reputation");
 const {
   lobbyMessage,
   lobbyReplacedMessage,
   stackReadyDm,
+  ratePanelMessage,
   wfhVoteMessage,
   plannedSessionMessage,
   windowsMessage,
@@ -1122,7 +1124,7 @@ describe("lobby vote-out and /votekick", () => {
       const msg = lobbyMessage(ctx, s.session, summarizeLive(ctx.games, s.players), [], partyOf(ctx, s.session, s.players, s.votes, null));
       expect(msg.content).toContain(`🚪 Voted out: ${mention(ctx.byId.get("demo-sam"))} (tap I'm in to come back)`);
       expect(msg.content).toContain("🗳️ Votes to remove: **Kai** 1/2");
-      expect(msg.components!.at(-1)!.components.map((b) => b.custom_id)).toEqual([`kickmenu:${sessionId}`]);
+      expect(msg.components!.at(-1)!.components.map((b) => b.custom_id)).toEqual([`kickmenu:${sessionId}`, `rate:${sessionId}`]);
       assertDiscordLimits(msg);
 
       // Here after all: I'm in puts Sam back, with no votes against him.
@@ -1214,5 +1216,246 @@ describe("lobby vote-out and /votekick", () => {
     } finally {
       await endSession(ctx, sessionId);
     }
+  });
+});
+
+describe("lobby ratings, bannable offenses and /summary", () => {
+  const user = (id: string) => ({ user: { id, username: id } });
+  const base = { id: "1", application_id: "app", token: "t", channel_id: "chan" };
+  const message = { id: "msg", channel_id: "chan" };
+  const click = async (customId: string, discordId: string) => {
+    const tasks: Array<() => Promise<unknown>> = [];
+    const res = await handleInteraction({ ...base, type: 3, member: user(discordId), data: { custom_id: customId }, message }, (t) => tasks.push(t));
+    return { ...res, tasks };
+  };
+  const ids = (msg: { components?: Array<{ components: Array<{ custom_id?: string }> }> }) =>
+    (msg.components ?? []).flatMap((r) => r.components.map((b) => b.custom_id));
+
+  beforeAll(async () => {
+    const db = await getDb();
+    for (const [userId, discordId] of [["demo-kai", "1001"], ["demo-sam", "1002"], ["demo-dev", "1003"]]) {
+      await db.update(memberProfiles).set({ discordId }).where(eq(memberProfiles.userId, userId));
+    }
+    ctx = await fresh();
+  });
+  afterAll(async () => {
+    const db = await getDb();
+    await db.update(memberProfiles).set({ discordId: null }).where(eq(memberProfiles.userId, "demo-dev"));
+    ctx = await fresh();
+  });
+
+  it("takes one 👍 or 👎 per teammate per lobby, and totals count every lobby", async () => {
+    const { sessionId } = await startFreshLive(ctx, "demo-maya");
+    try {
+      for (const id of ["demo-dev", "demo-kai"]) await setPlayerStatus(ctx, sessionId, id, "in");
+      await setPlayerStatus(ctx, sessionId, "demo-sam", "declined");
+      await expect(rate(ctx, sessionId, "demo-kai", "demo-sam", 1)).rejects.toThrow(/not in this lobby/); // "Not tonight"
+      await expect(rate(ctx, sessionId, "demo-sam", "demo-kai", 1)).rejects.toThrow(/Join the lobby first/);
+      await expect(rate(ctx, sessionId, "demo-kai", "demo-kai", 1)).rejects.toThrow(/yourself/);
+
+      expect((await rate(ctx, sessionId, "demo-kai", "demo-maya", 1)).value).toBe(1);
+      expect((await rate(ctx, sessionId, "demo-kai", "demo-maya", 1)).value).toBe(0); // the same again takes it back
+      expect((await rate(ctx, sessionId, "demo-kai", "demo-maya", -1)).value).toBe(-1);
+      const switched = await rate(ctx, sessionId, "demo-kai", "demo-maya", 1); // the other one switches
+      expect(switched.value).toBe(1);
+      expect(switched.ratings.mine).toEqual({ "demo-maya": 1 });
+      expect(switched.ratings.totals["demo-maya"]).toMatchObject({ up: 1, down: 0 });
+      await rate(ctx, sessionId, "demo-dev", "demo-maya", -1);
+    } finally {
+      await endSession(ctx, sessionId);
+    }
+    await expect(rate(ctx, sessionId, "demo-kai", "demo-dev", 1)).rejects.toThrow(/closed/);
+
+    const next = await startFreshLive(ctx, "demo-kai");
+    try {
+      await setPlayerStatus(ctx, next.sessionId, "demo-maya", "in");
+      await rate(ctx, next.sessionId, "demo-kai", "demo-maya", 1);
+      ctx = await fresh();
+      expect(ctx.byId.get("demo-maya")!.rep).toMatchObject({ up: 2, down: 1, offenses: 0, menace: false });
+    } finally {
+      await endSession(ctx, next.sessionId);
+    }
+  });
+
+  it("counts a bannable offense at 3 reports in a lobby, and tags someone with 3 offenses", async () => {
+    const lobbyWithReports = async (reporters: string[]) => {
+      const { sessionId } = await startFreshLive(ctx, "demo-maya");
+      for (const id of ["demo-dev", "demo-rosa", "demo-kai", "demo-sam"]) await setPlayerStatus(ctx, sessionId, id, "in");
+      for (const id of reporters) await toggleOffense(ctx, sessionId, id, "demo-sam");
+      return sessionId;
+    };
+    const first = await lobbyWithReports(["demo-maya", "demo-dev"]);
+    try {
+      const two = (await getLobbyRatings(ctx, first, "demo-maya"))!.ratings;
+      expect(two.reports["demo-sam"]).toBe(2);
+      expect(two.totals["demo-sam"]?.offenses ?? 0).toBe(0); // two isn't enough
+      const third = await toggleOffense(ctx, first, "demo-rosa", "demo-sam");
+      expect(third).toMatchObject({ reported: true, counts: true, changed: true });
+      expect(third.ratings.totals["demo-sam"].offenses).toBe(1);
+      const fourth = await toggleOffense(ctx, first, "demo-kai", "demo-sam");
+      expect(fourth).toMatchObject({ counts: true, changed: false });
+      expect(fourth.ratings.totals["demo-sam"].offenses).toBe(1); // still one offense for this lobby
+      await toggleOffense(ctx, first, "demo-kai", "demo-sam"); // taken back: 3 left
+      const below = await toggleOffense(ctx, first, "demo-rosa", "demo-sam"); // 2 left
+      expect(below).toMatchObject({ reported: false, counts: false, changed: true });
+      expect(below.ratings.totals["demo-sam"]?.offenses ?? 0).toBe(0);
+      await toggleOffense(ctx, first, "demo-rosa", "demo-sam"); // 3 again
+      await expect(toggleOffense(ctx, first, "demo-sam", "demo-sam")).rejects.toThrow(/report yourself/);
+    } finally {
+      await endSession(ctx, first);
+    }
+    for (let n = 0; n < 2; n++) await endSession(ctx, await lobbyWithReports(["demo-maya", "demo-dev", "demo-kai"]));
+    ctx = await fresh();
+    const sam = ctx.byId.get("demo-sam")!;
+    expect(sam.rep).toMatchObject({ offenses: 3, menace: true });
+    expect(mention(sam)).toContain("(🚨 Certified Menace)");
+    expect(mention(ctx.byId.get("demo-kai"))).not.toContain("Menace");
+  });
+
+  it("stores anonymous feedback, checks it, and caps notes per lobby", async () => {
+    const { sessionId } = await startFreshLive(ctx, "demo-maya");
+    try {
+      for (const id of ["demo-kai", "demo-sam"]) await setPlayerStatus(ctx, sessionId, id, "in");
+      await expect(addFeedback(ctx, sessionId, "demo-kai", "demo-sam", "   ")).rejects.toThrow(/Write something/);
+      await expect(addFeedback(ctx, sessionId, "demo-kai", "demo-sam", "x".repeat(FEEDBACK_MAX_CHARS + 1))).rejects.toThrow(/under 500/);
+      await expect(addFeedback(ctx, sessionId, "demo-dev", "demo-sam", "hi")).rejects.toThrow(/Join the lobby first/);
+      for (const n of [1, 2, 3, 4, 5]) await addFeedback(ctx, sessionId, "demo-kai", "demo-sam", `Note ${n}: great comms`);
+      await expect(addFeedback(ctx, sessionId, "demo-kai", "demo-sam", "one more")).rejects.toThrow(/5 notes/);
+      await addFeedback(ctx, sessionId, "demo-maya", "demo-sam", "Clutched the last round  \n\n\n\n but tilted after losses");
+      const notes = await feedbackAbout(ctx.group.id, "demo-sam");
+      expect(notes).toHaveLength(6);
+      expect(notes).toContain("Clutched the last round \n\n but tilted after losses");
+    } finally {
+      await endSession(ctx, sessionId);
+    }
+  });
+
+  it("/summary sums up the feedback with AI, privately, and says why when it can't", async () => {
+    const summary = async (target: string) => {
+      const tasks: Array<() => Promise<unknown>> = [];
+      const res = await handleInteraction(
+        { ...base, type: 2, member: user("1001"), data: { name: "summary", options: [{ name: "player", value: target }] } },
+        (t) => tasks.push(t),
+      );
+      for (const t of tasks) await t();
+      return res;
+    };
+    const unknown = await summary("999");
+    expect(unknown).toMatchObject({ type: 4, data: { flags: 64 } });
+    expect(unknown.data!.content).toMatch(/I don't know them yet/);
+
+    // Stand-ins for Discord (editing the "thinking…" reply) and the AI.
+    const calls: Array<{ url: string; body: { model?: string; messages?: Array<{ content: string }>; content?: string } }> = [];
+    let aiStatus = 200;
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      const u = String(url);
+      calls.push({ url: u, body: init?.body ? JSON.parse(String(init.body)) : {} });
+      if (!u.includes("/chat/completions")) return new Response(null, { status: 204 });
+      if (aiStatus !== 200) return new Response("overloaded", { status: aiStatus });
+      return Response.json({ choices: [{ message: { content: "Sam has great comms and clutches rounds, but tilts after losses." } }] });
+    }) as typeof fetch;
+    const edited = () => calls.find((c) => c.url.endsWith("/webhooks/app/t/messages/@original"))!.body.content!;
+    const askedAi = () => calls.some((c) => c.url.includes("/chat/completions"));
+    const quiet = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      delete process.env.GEMINI_API_KEY;
+      delete process.env.AI_API_KEY;
+      const off = await summary("1002");
+      expect(off).toMatchObject({ type: 5, data: { flags: 64 } }); // "thinking…", only for whoever asked
+      expect(edited()).toContain("📋 **Player report: Sam** · 🚨 Certified Menace");
+      expect(edited()).toContain("👍 0 · 👎 0 · 🚫 3 bannable offenses");
+      expect(edited()).toContain("AI summaries are off");
+      expect(edited()).toMatch(/\n> (Note \d: great comms|Clutched)/);
+      expect(askedAi()).toBe(false);
+
+      calls.length = 0;
+      process.env.GEMINI_API_KEY = "test-key";
+      await summary("1002");
+      const ai = calls.find((c) => c.url.includes("/chat/completions"))!;
+      expect(ai.url).toBe("https://generativelanguage.googleapis.com/v1beta/openai/chat/completions");
+      expect(ai.body.model).toBe("gemini-3.8-flash");
+      const prompt = ai.body.messages!.at(-1)!.content;
+      expect(prompt).toContain("Player: Sam");
+      expect(prompt).toContain("Bannable offenses: 3");
+      expect(prompt).toContain("- Clutched the last round");
+      expect(edited()).toContain("Sam has great comms and clutches rounds");
+      expect(edited()).toContain("From 6 anonymous notes, summed up by AI");
+
+      calls.length = 0;
+      await summary("1003"); // Dev: nothing written about him yet
+      expect(askedAi()).toBe(false);
+      expect(edited()).toContain("No written feedback yet");
+
+      calls.length = 0;
+      aiStatus = 503;
+      await summary("1002");
+      expect(edited()).toContain("The AI didn't answer this time");
+    } finally {
+      globalThis.fetch = realFetch;
+      delete process.env.GEMINI_API_KEY;
+      quiet.mockRestore();
+    }
+  });
+
+  it("works from Discord: a private panel, and a pop-up form for feedback", async () => {
+    const { sessionId } = await startFreshLive(ctx, "demo-maya");
+    try {
+      for (const id of ["demo-kai", "demo-sam"]) await setPlayerStatus(ctx, sessionId, id, "in");
+      const s = (await getSession(ctx.group.id, sessionId))!;
+      expect(ids(lobbyMessage(ctx, s.session, summarizeLive(ctx.games, s.players), []))).toContain(`rate:${sessionId}`);
+
+      const outsider = await click(`rate:${sessionId}`, "1003"); // Dev isn't in this lobby
+      expect(outsider).toMatchObject({ type: 4, data: { flags: 64 } });
+      expect(outsider.data!.content).toMatch(/Join the lobby first/);
+
+      const panel = await click(`rate:${sessionId}`, "1001"); // Kai
+      expect(panel).toMatchObject({ type: 4, data: { flags: 64 } });
+      expect(panel.data!.components!.map((r) => r.components.map((b) => b.custom_id))).toEqual(
+        ["demo-maya", "demo-sam"].map((id) => [`up:${sessionId}:${id}`, `down:${sessionId}:${id}`, `ban:${sessionId}:${id}`, `fbopen:${sessionId}:${id}`]),
+      );
+      assertDiscordLimits(panel.data!);
+
+      const up = await click(`up:${sessionId}:demo-maya`, "1001");
+      expect(up.type).toBe(7); // updates the panel
+      expect(up.data!.components![0].components[0]).toMatchObject({ style: 3, label: "Maya · 3" }); // her 3rd 👍 overall
+
+      const ban = await click(`ban:${sessionId}:demo-sam`, "1001");
+      expect(ban.data!.content).toContain("1 of 3 reports needed");
+      expect(ban.data!.components![1].components[0].label).toBe("Sam 🚨 · 0");
+      expect(ban.data!.components![1].components[2]).toMatchObject({ style: 4, label: "1/3" });
+      expect(ban.tasks).toHaveLength(0); // doesn't count yet: the lobby post stays as it is
+
+      const form = await click(`fbopen:${sessionId}:demo-sam`, "1001");
+      expect(form.type).toBe(9);
+      expect(form.data as unknown).toMatchObject({ custom_id: `fb:${sessionId}:demo-sam`, title: "Feedback for Sam" });
+      const sent = await handleInteraction(
+        {
+          ...base,
+          type: 5,
+          member: user("1001"),
+          data: { custom_id: `fb:${sessionId}:demo-sam`, components: [{ components: [{ custom_id: "text", value: "Called every rotation" }] }] },
+          message,
+        },
+        () => {},
+      );
+      expect(sent.type).toBe(7);
+      expect(sent.data!.content).toContain("📝 Saved your note about **Sam**");
+      expect(sent.data!.components![1].components[3].label).toBe("Feedback (1)");
+      expect(await feedbackAbout(ctx.group.id, "demo-sam")).toContain("Called every rotation");
+    } finally {
+      await endSession(ctx, sessionId);
+    }
+
+    // Lots of people: pages of 4, opening on the page with whoever was just rated.
+    const people = ["demo-maya", "demo-dev", "demo-rosa", "demo-kai", "demo-sam", "guest-1", "guest-2", "guest-3"];
+    const blank = { sessionId: "s", open: true, people, mine: {}, myReports: [], reports: {}, myNotes: {}, totals: {} };
+    const paged = ratePanelMessage(ctx, blank, "demo-kai", { focus: "guest-2" });
+    expect(paged.components).toHaveLength(4); // 3 people + Previous/Next
+    expect(paged.components!.at(-1)!.components.map((b) => [b.label, b.disabled])).toEqual([
+      ["◀ Previous", false],
+      ["Next ▶ (2/2)", true],
+    ]);
+    assertDiscordLimits(paged);
   });
 });
