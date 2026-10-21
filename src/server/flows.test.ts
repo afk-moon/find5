@@ -1424,9 +1424,15 @@ describe("lobby ratings, bannable offenses and /summary", () => {
 
       const panel = await click(`rate:${sessionId}`, "1001"); // Kai
       expect(panel).toMatchObject({ type: 4, data: { flags: 64 } });
-      expect(panel.data!.components!.map((r) => r.components.map((b) => b.custom_id))).toEqual(
-        ["demo-maya", "demo-sam"].map((id) => [`up:${sessionId}:${id}`, `down:${sessionId}:${id}`, `ban:${sessionId}:${id}`, `fbopen:${sessionId}:${id}`]),
-      );
+      const row = (id: string) => [`up:${sessionId}:${id}`, `down:${sessionId}:${id}`, `ban:${sessionId}:${id}`, `fbopen:${sessionId}:${id}`];
+      expect(panel.data!.components!.map((r) => r.components.map((b) => b.custom_id))).toEqual([
+        row("demo-maya"),
+        row("demo-kai").slice(0, 3), // Kai sees himself too: his numbers, no feedback button
+        row("demo-sam"),
+      ]);
+      const mine = panel.data!.components![1].components;
+      expect(mine[0].label).toBe("Kai (you) · 0");
+      expect(panel.data!.components!.map((r) => r.components.every((b) => b.disabled))).toEqual([false, true, false]); // only his is grayed out
       assertDiscordLimits(panel.data!);
 
       const up = await click(`up:${sessionId}:demo-maya`, "1001");
@@ -1439,8 +1445,8 @@ describe("lobby ratings, bannable offenses and /summary", () => {
 
       const ban = await click(`ban:${sessionId}:demo-sam`, "1001");
       expect(ban.data!.content).toContain("1 report from 1 person in this lobby");
-      expect(ban.data!.components![1].components[0].label).toBe("Sam 🚨 · 0");
-      expect(ban.data!.components![1].components[2]).toMatchObject({ style: 4, label: "1" });
+      expect(ban.data!.components![2].components[0].label).toBe("Sam 🚨 · 0");
+      expect(ban.data!.components![2].components[2]).toMatchObject({ style: 4, label: "1" });
       expect((await click(`ban:${sessionId}:demo-sam`, "1001")).data!.content).toMatch(/⏳ You can report \*\*Sam\*\* again/);
       expect(ban.tasks).toHaveLength(0); // doesn't count yet: the lobby post stays as it is
 
@@ -1459,7 +1465,7 @@ describe("lobby ratings, bannable offenses and /summary", () => {
       );
       expect(sent.type).toBe(7);
       expect(sent.data!.content).toContain("📝 Saved your note about **Sam**");
-      expect(sent.data!.components![1].components[3].label).toBe("Feedback (1)");
+      expect(sent.data!.components![2].components[3].label).toBe("Feedback (1)");
       expect(await feedbackAbout(ctx.group.id, "demo-sam")).toContain("Called every rotation");
     } finally {
       await endSession(ctx, sessionId);
@@ -1481,8 +1487,10 @@ describe("lobby ratings, bannable offenses and /summary", () => {
       myNotes: {},
       totals: {},
     };
+    const firstPage = ratePanelMessage(ctx, blank, "demo-kai");
+    expect(firstPage.components![3].components.map((b) => b.disabled)).toEqual([true, true, true]); // Kai's own row
     const paged = ratePanelMessage(ctx, blank, "demo-kai", { focus: "guest-2" });
-    expect(paged.components).toHaveLength(4); // 3 people + Previous/Next
+    expect(paged.components).toHaveLength(5); // 4 people + Previous/Next
     expect(paged.components!.at(-1)!.components.map((b) => [b.label, b.disabled])).toEqual([
       ["◀ Previous", false],
       ["Next ▶ (2/2)", true],

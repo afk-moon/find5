@@ -343,8 +343,9 @@ export function lobbyMessage(
 /**
  * The private ratings panel (only the viewer sees it): a row per person with 👍/👎 (labels show their totals
  * over every lobby; the viewer's latest one is lit), 🚫 bannable offense (reports in this lobby, and the
- * offenses they make) and 💬 feedback. Up to 5 people fit; more get pages of 4 with Previous/Next. It opens on
- * `page`, or on the page with `focus` (whoever was just rated).
+ * offenses they make) and 💬 feedback. The viewer has a row too, grayed out: their own numbers, nothing to tap.
+ * Up to 5 people fit; more get pages of 4 with Previous/Next. It opens on `page`, or on the page with `focus`
+ * (whoever was just rated).
  */
 export function ratePanelMessage(
   ctx: GroupContext,
@@ -353,32 +354,39 @@ export function ratePanelMessage(
   { page = 0, focus, note }: { page?: number; focus?: string; note?: string } = {},
 ): DiscordMessage {
   const others = r.people.filter((id) => id !== viewerId);
-  const perPage = others.length <= 5 ? 5 : 4;
-  const pages = Math.max(1, Math.ceil(others.length / perPage));
-  const at = focus && others.includes(focus) ? Math.floor(others.indexOf(focus) / perPage) : page;
+  const perPage = r.people.length <= 5 ? 5 : 4;
+  const pages = Math.max(1, Math.ceil(r.people.length / perPage));
+  const at = focus && r.people.includes(focus) ? Math.floor(r.people.indexOf(focus) / perPage) : page;
   const p = Math.min(Math.max(0, at), pages - 1);
-  const rows: ActionRow[] = others.slice(p * perPage, (p + 1) * perPage).map((id) => {
+  const rows: ActionRow[] = r.people.slice(p * perPage, (p + 1) * perPage).map((id) => {
+    const you = id === viewerId;
     const t = r.totals[id] ?? NO_REPUTATION;
     const vote = r.lastVote[id];
     const reports = r.reports[id] ?? 0;
     const offenses = r.offenses[id] ?? 0;
     const name = (ctx.byId.get(id)?.name ?? "someone").slice(0, 40);
     const notes = r.myNotes[id] ?? 0;
-    return {
-      type: 1,
-      components: [
-        { type: 2, style: vote === 1 ? 3 : 2, emoji: { name: "👍" }, label: `${name}${t.menace ? " 🚨" : ""} · ${t.up}`, custom_id: `up:${r.sessionId}:${id}` },
-        { type: 2, style: vote === -1 ? 4 : 2, emoji: { name: "👎" }, label: String(t.down), custom_id: `down:${r.sessionId}:${id}` },
-        {
-          type: 2,
-          style: r.myReports[id] ? 4 : 2,
-          emoji: { name: "🚫" },
-          label: offenses ? `${reports} (${offenses} offense${offenses === 1 ? "" : "s"})` : String(reports),
-          custom_id: `ban:${r.sessionId}:${id}`,
-        },
-        { type: 2, style: 2, emoji: { name: "💬" }, label: notes ? `Feedback (${notes})` : "Feedback", custom_id: `fbopen:${r.sessionId}:${id}` },
-      ],
-    };
+    const buttons: Button[] = [
+      {
+        type: 2,
+        style: vote === 1 ? 3 : 2,
+        emoji: { name: "👍" },
+        label: `${name}${you ? " (you)" : ""}${t.menace ? " 🚨" : ""} · ${t.up}`,
+        custom_id: `up:${r.sessionId}:${id}`,
+      },
+      { type: 2, style: vote === -1 ? 4 : 2, emoji: { name: "👎" }, label: String(t.down), custom_id: `down:${r.sessionId}:${id}` },
+      {
+        type: 2,
+        style: r.myReports[id] ? 4 : 2,
+        emoji: { name: "🚫" },
+        label: offenses ? `${reports} (${offenses} offense${offenses === 1 ? "" : "s"})` : String(reports),
+        custom_id: `ban:${r.sessionId}:${id}`,
+      },
+    ];
+    // Your own row: your numbers, grayed out (nobody rates themselves).
+    if (you) return { type: 1, components: buttons.map((b) => ({ ...b, disabled: true })) };
+    buttons.push({ type: 2, style: 2, emoji: { name: "💬" }, label: notes ? `Feedback (${notes})` : "Feedback", custom_id: `fbopen:${r.sessionId}:${id}` });
+    return { type: 1, components: buttons };
   });
   if (pages > 1) {
     rows.push({
@@ -393,7 +401,7 @@ export function ratePanelMessage(
   const help = !r.open
     ? "That lobby is closed."
     : others.length
-      ? `⭐ **Rate players** (only you see this). 👍/👎 as often as every ${cooldown} per person; the numbers are their totals. ` +
+      ? `⭐ **Rate players** (only you see this). 👍/👎 as often as every ${cooldown} per person; the numbers are totals, and your grayed-out row shows yours. ` +
         `🚫 **Bannable offense** (also every ${cooldown}): every ${REPORTS_PER_OFFENSE} reports from ${REPORTS_PER_OFFENSE} different people in a lobby make one offense, and ${OFFENSES_FOR_TAG} offenses earn ${MENACE_TAG}. ` +
         "💬 Feedback is anonymous; `/summary @name` shows it word for word."
       : "Nobody else is in the lobby yet.";

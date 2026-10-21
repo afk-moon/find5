@@ -253,7 +253,8 @@ game: it pings whoever is free right now, and as people join it shows each game'
   can't wipe a late report.
 
 **Ratings and feedback.** In a lobby, **⭐ Rate players** (a button on the lobby post, or the card under the
-lobby on the Live page) lists everyone who joined it, except people who said “Not tonight”.
+lobby on the Live page) lists everyone who joined it, except people who said “Not tonight”. You're on it
+too, grayed out: your own numbers, with nothing to tap.
 - 👍/👎: as many as you like, but once every 2 minutes per teammate (👍 and 👎 share the wait; a tap during
   it says when you can again). The numbers are their totals over every lobby, and your latest one is lit.
   Anonymous: only the totals show.
