@@ -1,4 +1,4 @@
-import { boolean, integer, jsonb, pgTable, primaryKey, text, timestamp, unique } from "drizzle-orm/pg-core";
+import { boolean, index, integer, jsonb, pgTable, primaryKey, text, timestamp, unique } from "drizzle-orm/pg-core";
 
 const createdAt = () => timestamp("created_at", { withTimezone: true }).defaultNow().notNull();
 const updatedAt = () =>
@@ -320,10 +320,14 @@ export const kickVotes = pgTable(
   (t) => [primaryKey({ columns: [t.sessionId, t.voterId, t.targetId] })],
 );
 
-/** 👍 (1) or 👎 (-1) from one lobby member to another: one per teammate per lobby. Shown as totals only. */
+/**
+ * 👍 (1) or 👎 (-1) from one lobby member to another, one row per tap: as many as people like, but once
+ * every couple of minutes per person (see RATING_COOLDOWN_MS). Shown as totals only.
+ */
 export const playerRatings = pgTable(
   "player_ratings",
   {
+    id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
     sessionId: text("session_id")
       .notNull()
       .references(() => playSessions.id, { onDelete: "cascade" }),
@@ -336,16 +340,17 @@ export const playerRatings = pgTable(
     value: integer("value").notNull(),
     createdAt: createdAt(),
   },
-  (t) => [primaryKey({ columns: [t.sessionId, t.raterId, t.targetId] })],
+  (t) => [index("player_ratings_session_idx").on(t.sessionId)],
 );
 
 /**
- * "Bannable offense" reports in a lobby. Enough reports about the same person in one lobby make one offense
- * (see src/engine/reputation.ts). Shown as counts only, so reporters stay anonymous.
+ * "Bannable offense" reports in a lobby, one row per tap (with the same cooldown as 👍/👎). Every few reports
+ * from as many different people make one offense (see src/engine/reputation.ts). Shown as counts only.
  */
 export const offenseReports = pgTable(
   "offense_reports",
   {
+    id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
     sessionId: text("session_id")
       .notNull()
       .references(() => playSessions.id, { onDelete: "cascade" }),
@@ -357,7 +362,7 @@ export const offenseReports = pgTable(
       .references(() => user.id, { onDelete: "cascade" }),
     createdAt: createdAt(),
   },
-  (t) => [primaryKey({ columns: [t.sessionId, t.reporterId, t.targetId] })],
+  (t) => [index("offense_reports_session_idx").on(t.sessionId)],
 );
 
 /** Free-text feedback about a lobby member. Anonymous: /summary sums it up with AI and never says who wrote what. */

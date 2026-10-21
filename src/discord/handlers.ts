@@ -26,7 +26,7 @@ import {
   toggleKickVote,
   type PartyState,
 } from "@/server/party";
-import { addFeedback, getLobbyRatings, playerReport, rate, toggleOffense } from "@/server/reputation";
+import { addFeedback, getLobbyRatings, playerReport, rate, reportOffense } from "@/server/reputation";
 import {
   activeLive,
   endSession,
@@ -418,27 +418,33 @@ async function onButton(i: Interaction, ctx: GroupContext, me: MemberView, defer
     return { type: 4, data: { ...ratePanelMessage(ctx, found.ratings, me.id), flags: EPHEMERAL } };
   }
 
+  // 👍/👎/🚫 as often as every couple of minutes per person; a tap during the wait says when (a live countdown).
   if (kind === "up" || kind === "down") {
-    const result = await rate(ctx, a, me.id, b, kind === "up" ? 1 : -1);
+    const up = kind === "up";
+    const result = await rate(ctx, a, me.id, b, up ? 1 : -1);
     const name = ctx.byId.get(b)?.name ?? "them";
-    const note = result.value === 0 ? `↩️ Took back your vote for **${name}**.` : `${result.value === 1 ? "👍" : "👎"} for **${name}**.`;
+    const note = result.added
+      ? `${up ? "👍" : "👎"} for **${name}**. You can rate them again ${discordTs(result.readyAt, "R")}.`
+      : `⏳ You can rate **${name}** again ${discordTs(result.readyAt, "R")}.`;
     return update(ratePanelMessage(ctx, result.ratings, me.id, { focus: b, note }));
   }
 
   if (kind === "ban") {
-    const result = await toggleOffense(ctx, a, me.id, b);
+    const result = await reportOffense(ctx, a, me.id, b);
     const name = ctx.byId.get(b)?.name ?? "them";
-    const n = result.ratings.reports[b] ?? 0;
-    const note = !result.reported
-      ? `↩️ Took back your report about **${name}**.`
+    const r = result.ratings;
+    const n = r.reports[b] ?? 0;
+    const people = r.reporters[b] ?? 0;
+    const offenses = r.offenses[b] ?? 0;
+    const so = `${n} report${n === 1 ? "" : "s"} from ${people} ${people === 1 ? "person" : "people"} in this lobby`;
+    const note = !result.added
+      ? `⏳ You can report **${name}** again ${discordTs(result.readyAt, "R")}.`
       : result.changed
-        ? `🚫 That's ${n} reports: it counts as a bannable offense for **${name}**.`
-        : result.counts
-          ? `🚫 Reported **${name}** (it already counts in this lobby).`
-          : `🚫 Reported **${name}** (${n} of ${REPORTS_PER_OFFENSE} reports needed).`;
-    // When an offense starts or stops counting, their tag can change, and names on the lobby post show it.
+        ? `🚫 That makes ${offenses} bannable offense${offenses === 1 ? "" : "s"} for **${name}** in this lobby (${so}).`
+        : `🚫 Reported **${name}**: ${so}. Every ${REPORTS_PER_OFFENSE} from ${REPORTS_PER_OFFENSE} different people make an offense.`;
+    // A new offense can earn them the tag, and names on the lobby post show it.
     if (result.changed) defer(async () => syncLobby(await loadGroupContext(ctx.group.id), a));
-    return update(ratePanelMessage(ctx, result.ratings, me.id, { focus: b, note }));
+    return update(ratePanelMessage(ctx, r, me.id, { focus: b, note }));
   }
 
   if (kind === "fbopen") {

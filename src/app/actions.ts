@@ -33,7 +33,7 @@ import {
   syncWfhVote,
 } from "@/server/notify";
 import { toggleDropOut, toggleKickVote } from "@/server/party";
-import { addFeedback, rate, toggleOffense } from "@/server/reputation";
+import { addFeedback, rate, reportOffense } from "@/server/reputation";
 import { SESSION_COOKIE } from "@/server/session-cookie";
 import {
   cancelSession,
@@ -282,11 +282,18 @@ export async function liveAction(sessionId: string, action: LiveAction): Promise
 
 // ─── Lobby ratings ─────────────────────────────────────────────────────────────────────────
 
-/** 👍 (1) or 👎 (-1) someone in the lobby; the same one again takes it back. */
+/** "1:45", "40s": how long until someone can rate the same person again. */
+function waitText(readyAt: number) {
+  const s = Math.max(1, Math.ceil((readyAt - Date.now()) / 1000));
+  return s >= 60 ? `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}` : `${s}s`;
+}
+
+/** 👍 (1) or 👎 (-1) someone in the lobby, as often as every couple of minutes per person. */
 export async function rateAction(sessionId: string, targetId: string, value: number): Promise<ActionResult> {
   const { ctx, userId } = await requireViewer();
   try {
-    await rate(ctx, sessionId, userId, targetId, value > 0 ? 1 : -1);
+    const { added, readyAt } = await rate(ctx, sessionId, userId, targetId, value > 0 ? 1 : -1);
+    if (!added) return { ok: false, error: `⏳ Again in ${waitText(readyAt)}` };
     refreshAll();
     return { ok: true };
   } catch (e) {
@@ -294,15 +301,16 @@ export async function rateAction(sessionId: string, targetId: string, value: num
   }
 }
 
-/** Report someone in the lobby for a bannable offense (tap again to take it back). */
+/** Report someone in the lobby for a bannable offense, as often as every couple of minutes per person. */
 export async function reportOffenseAction(sessionId: string, targetId: string): Promise<ActionResult> {
   const { ctx, userId } = await requireViewer();
   try {
-    const { reported, counts, changed } = await toggleOffense(ctx, sessionId, userId, targetId);
-    // Their tag can change, and names on the lobby's Discord post show it.
+    const { added, readyAt, changed } = await reportOffense(ctx, sessionId, userId, targetId);
+    if (!added) return { ok: false, error: `⏳ Again in ${waitText(readyAt)}` };
+    // A new offense can earn them the tag, and names on the lobby's Discord post show it.
     if (changed) await syncLobby(await loadGroupContext(ctx.group.id), sessionId);
     refreshAll();
-    return { ok: true, message: reported && changed && counts ? "That makes it a bannable offense" : undefined };
+    return { ok: true, message: changed ? "That makes a bannable offense" : undefined };
   } catch (e) {
     return actionError(e);
   }

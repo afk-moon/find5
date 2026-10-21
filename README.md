@@ -22,9 +22,9 @@ line up their work-from-home days. It's a web app plus an optional Discord bot.
 - **Can't make it / vote out:** on a locked-in session, anyone can tap 🙅 **Can't make it**, and teammates
   can vote out someone who's late or not coming (2 votes; 1 in a duo). The lobby has 🗳️ **Vote someone
   out** too, for someone who tapped in but isn't around, and `/votekick @name` works for both.
-- **Ratings & feedback:** in a lobby, 👍/👎 your teammates, report a 🚫 bannable offense (it counts once 3
-  people report the same person in a lobby, and 3 of those earn a comic 🚨 **Certified Menace** tag), and leave
-  anonymous feedback. `/summary @name` shows someone's numbers and an AI summary of what people wrote.
+- **Ratings & feedback:** in a lobby, 👍/👎 your teammates and report 🚫 bannable offenses, as often as every
+  2 minutes per person (every 3 reports from 3 different people make an offense, and 3 offenses earn a comic
+  🚨 **Certified Menace** tag), and leave anonymous feedback. `/summary @name` shows someone's numbers and an AI summary of what people wrote.
 - **Late reports:** once a locked-in session starts, teammates can report who was late. Anyone late in
   more than half of their last 10 sessions gets a ⏰ **Frequently late** tag next to their name.
 - **Discord:** login, slash commands, lobby buttons, announcements, and Scheduled Events.
@@ -254,15 +254,17 @@ game: it pings whoever is free right now, and as people join it shows each game'
 
 **Ratings and feedback.** In a lobby, **⭐ Rate players** (a button on the lobby post, or the card under the
 lobby on the Live page) lists everyone who joined it, except people who said “Not tonight”.
-- 👍/👎: one each per teammate per lobby. Tap again to undo, or the other one to switch. The numbers are
-  their totals over every lobby. Anonymous: only the totals show.
-- 🚫 **Bannable offense**: counts as one offense once 3 different people report the same person in a lobby
-  (more reports in that lobby don't add another). 3 offenses earn a comic 🚨 **Certified Menace** tag next to
-  their name, everywhere names show. Reports can be taken back while the lobby is open.
+- 👍/👎: as many as you like, but once every 2 minutes per teammate (👍 and 👎 share the wait; a tap during
+  it says when you can again). The numbers are their totals over every lobby, and your latest one is lit.
+  Anonymous: only the totals show.
+- 🚫 **Bannable offense**: also once every 2 minutes per person. Every 3 reports from 3 different people in a
+  lobby make one offense, so one person reporting again and again never makes one alone, and each incident
+  needs three people. 3 offenses earn a comic 🚨 **Certified Menace** tag next to their name, everywhere
+  names show. Votes and reports can't be taken back.
 - 💬 **Feedback**: anonymous notes (up to 500 characters, 5 per person per lobby). In Discord it's a pop-up
   form; on the Live page, a text box.
-- Everything is taken while the lobby is open. `REPORTS_PER_OFFENSE` and `OFFENSES_FOR_TAG` are at the top
-  of `src/engine/reputation.ts`.
+- Everything is taken while the lobby is open, and a new lobby starts the waits fresh. `RATING_COOLDOWN_MS`,
+  `REPORTS_PER_OFFENSE` and `OFFENSES_FOR_TAG` are at the top of `src/engine/reputation.ts`.
 - `/summary @name` posts a report in the channel: their 👍/👎, offenses and tags, plus an AI summary of the
   latest 60 notes about them. The AI is told never to quote anyone or guess who wrote what, and the report
   never shows notes word for word. It needs an AI key (see [Deploying](#deploying)); without one, it shows

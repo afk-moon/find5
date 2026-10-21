@@ -31,7 +31,8 @@ const { openLateVotes, toggleLateReport, getLateTally } = await import("./latene
 const { setAwayUntil, resolveBackTime } = await import("./away");
 const { freeNowNotInLobby, stackDms } = await import("./notify");
 const { getParty, toggleDropOut, toggleKickVote, kickVotesNeeded, partyOf } = await import("./party");
-const { rate, toggleOffense, addFeedback, feedbackAbout, getLobbyRatings, FEEDBACK_MAX_CHARS } = await import("./reputation");
+const { rate, reportOffense, addFeedback, feedbackAbout, getLobbyRatings, FEEDBACK_MAX_CHARS } = await import("./reputation");
+const { offensesFrom } = await import("@/engine/reputation");
 const {
   lobbyMessage,
   lobbyReplacedMessage,
@@ -1244,7 +1245,9 @@ describe("lobby ratings, bannable offenses and /summary", () => {
     ctx = await fresh();
   });
 
-  it("takes one 👍 or 👎 per teammate per lobby, and totals count every lobby", async () => {
+  it("takes 👍/👎 as often as every 2 minutes per person, and totals count every lobby", async () => {
+    const t0 = Date.now();
+    const at = (min: number) => t0 + min * 60_000;
     const { sessionId } = await startFreshLive(ctx, "demo-maya");
     try {
       for (const id of ["demo-dev", "demo-kai"]) await setPlayerStatus(ctx, sessionId, id, "in");
@@ -1253,14 +1256,17 @@ describe("lobby ratings, bannable offenses and /summary", () => {
       await expect(rate(ctx, sessionId, "demo-sam", "demo-kai", 1)).rejects.toThrow(/Join the lobby first/);
       await expect(rate(ctx, sessionId, "demo-kai", "demo-kai", 1)).rejects.toThrow(/yourself/);
 
-      expect((await rate(ctx, sessionId, "demo-kai", "demo-maya", 1)).value).toBe(1);
-      expect((await rate(ctx, sessionId, "demo-kai", "demo-maya", 1)).value).toBe(0); // the same again takes it back
-      expect((await rate(ctx, sessionId, "demo-kai", "demo-maya", -1)).value).toBe(-1);
-      const switched = await rate(ctx, sessionId, "demo-kai", "demo-maya", 1); // the other one switches
-      expect(switched.value).toBe(1);
-      expect(switched.ratings.mine).toEqual({ "demo-maya": 1 });
-      expect(switched.ratings.totals["demo-maya"]).toMatchObject({ up: 1, down: 0 });
-      await rate(ctx, sessionId, "demo-dev", "demo-maya", -1);
+      expect(await rate(ctx, sessionId, "demo-kai", "demo-maya", 1, at(0))).toMatchObject({ added: true, readyAt: at(2) });
+      // Within 2 minutes nothing more from Kai counts for Maya, 👍 or 👎…
+      expect(await rate(ctx, sessionId, "demo-kai", "demo-maya", 1, at(1))).toMatchObject({ added: false, readyAt: at(2) });
+      expect(await rate(ctx, sessionId, "demo-kai", "demo-maya", -1, at(1.5))).toMatchObject({ added: false });
+      // …but he can rate someone else, and Maya again once the wait is over.
+      expect((await rate(ctx, sessionId, "demo-kai", "demo-dev", 1, at(1))).added).toBe(true);
+      expect((await rate(ctx, sessionId, "demo-kai", "demo-maya", 1, at(2))).added).toBe(true);
+      const down = await rate(ctx, sessionId, "demo-kai", "demo-maya", -1, at(4));
+      expect(down.ratings.lastVote).toEqual({ "demo-maya": -1, "demo-dev": 1 });
+      expect(down.ratings.voteReadyAt).toEqual({ "demo-maya": at(6) }); // Dev's wait is over
+      expect(down.ratings.totals["demo-maya"]).toMatchObject({ up: 2, down: 1 });
     } finally {
       await endSession(ctx, sessionId);
     }
@@ -1269,42 +1275,48 @@ describe("lobby ratings, bannable offenses and /summary", () => {
     const next = await startFreshLive(ctx, "demo-kai");
     try {
       await setPlayerStatus(ctx, next.sessionId, "demo-maya", "in");
-      await rate(ctx, next.sessionId, "demo-kai", "demo-maya", 1);
+      expect((await rate(ctx, next.sessionId, "demo-kai", "demo-maya", 1, at(5))).added).toBe(true); // a new lobby starts fresh
       ctx = await fresh();
-      expect(ctx.byId.get("demo-maya")!.rep).toMatchObject({ up: 2, down: 1, offenses: 0, menace: false });
+      expect(ctx.byId.get("demo-maya")!.rep).toMatchObject({ up: 3, down: 1, offenses: 0, menace: false });
     } finally {
       await endSession(ctx, next.sessionId);
     }
   });
 
-  it("counts a bannable offense at 3 reports in a lobby, and tags someone with 3 offenses", async () => {
-    const lobbyWithReports = async (reporters: string[]) => {
-      const { sessionId } = await startFreshLive(ctx, "demo-maya");
-      for (const id of ["demo-dev", "demo-rosa", "demo-kai", "demo-sam"]) await setPlayerStatus(ctx, sessionId, id, "in");
-      for (const id of reporters) await toggleOffense(ctx, sessionId, id, "demo-sam");
-      return sessionId;
-    };
-    const first = await lobbyWithReports(["demo-maya", "demo-dev"]);
+  it("needs 3 different people for each bannable offense", () => {
+    const cases = [[3], [1, 1], [1, 1, 1], [2, 2, 1], [2, 2, 2], [5, 1, 1], [2, 2, 2, 1], [4, 4], [3, 3, 3]];
+    expect(cases.map((reportsPerReporter) => offensesFrom(reportsPerReporter))).toEqual([0, 0, 1, 1, 2, 1, 2, 0, 3]);
+  });
+
+  it("takes repeat reports every 2 minutes, counts offenses in a lobby, and tags someone with 3", async () => {
+    const t0 = Date.now();
+    const at = (min: number) => t0 + min * 60_000;
+    const report = (who: string, min: number) => reportOffense(ctx, sessionId, who, "demo-sam", at(min));
+    const { sessionId } = await startFreshLive(ctx, "demo-maya");
     try {
-      const two = (await getLobbyRatings(ctx, first, "demo-maya"))!.ratings;
-      expect(two.reports["demo-sam"]).toBe(2);
-      expect(two.totals["demo-sam"]?.offenses ?? 0).toBe(0); // two isn't enough
-      const third = await toggleOffense(ctx, first, "demo-rosa", "demo-sam");
-      expect(third).toMatchObject({ reported: true, counts: true, changed: true });
-      expect(third.ratings.totals["demo-sam"].offenses).toBe(1);
-      const fourth = await toggleOffense(ctx, first, "demo-kai", "demo-sam");
-      expect(fourth).toMatchObject({ counts: true, changed: false });
-      expect(fourth.ratings.totals["demo-sam"].offenses).toBe(1); // still one offense for this lobby
-      await toggleOffense(ctx, first, "demo-kai", "demo-sam"); // taken back: 3 left
-      const below = await toggleOffense(ctx, first, "demo-rosa", "demo-sam"); // 2 left
-      expect(below).toMatchObject({ reported: false, counts: false, changed: true });
-      expect(below.ratings.totals["demo-sam"]?.offenses ?? 0).toBe(0);
-      await toggleOffense(ctx, first, "demo-rosa", "demo-sam"); // 3 again
-      await expect(toggleOffense(ctx, first, "demo-sam", "demo-sam")).rejects.toThrow(/report yourself/);
+      for (const id of ["demo-dev", "demo-rosa", "demo-kai", "demo-sam"]) await setPlayerStatus(ctx, sessionId, id, "in");
+      // Maya alone, over and over: never an offense.
+      expect((await report("demo-maya", 0)).added).toBe(true);
+      expect(await report("demo-maya", 1)).toMatchObject({ added: false, readyAt: at(2) });
+      await report("demo-maya", 2);
+      const alone = await report("demo-maya", 4);
+      expect(alone.ratings).toMatchObject({ reports: { "demo-sam": 3 }, reporters: { "demo-sam": 1 }, myReports: { "demo-sam": 3 } });
+      expect(alone.ratings.offenses["demo-sam"] ?? 0).toBe(0);
+      // Dev and Rosa too: three different people, one offense.
+      await report("demo-dev", 4);
+      const one = await report("demo-rosa", 4);
+      expect(one).toMatchObject({ added: true, changed: true });
+      expect(one.ratings.offenses["demo-sam"]).toBe(1);
+      expect(one.ratings.totals["demo-sam"].offenses).toBe(1);
+      // Two more incidents, each reported by Dev and Rosa (Maya's earlier reports make the third).
+      await report("demo-dev", 6);
+      expect((await report("demo-rosa", 6)).ratings.offenses["demo-sam"]).toBe(2);
+      await report("demo-dev", 8);
+      expect((await report("demo-rosa", 8)).ratings.offenses["demo-sam"]).toBe(3);
+      await expect(reportOffense(ctx, sessionId, "demo-sam", "demo-sam", at(8))).rejects.toThrow(/report yourself/);
     } finally {
-      await endSession(ctx, first);
+      await endSession(ctx, sessionId);
     }
-    for (let n = 0; n < 2; n++) await endSession(ctx, await lobbyWithReports(["demo-maya", "demo-dev", "demo-kai"]));
     ctx = await fresh();
     const sam = ctx.byId.get("demo-sam")!;
     expect(sam.rep).toMatchObject({ offenses: 3, menace: true });
@@ -1419,12 +1431,17 @@ describe("lobby ratings, bannable offenses and /summary", () => {
 
       const up = await click(`up:${sessionId}:demo-maya`, "1001");
       expect(up.type).toBe(7); // updates the panel
-      expect(up.data!.components![0].components[0]).toMatchObject({ style: 3, label: "Maya · 3" }); // her 3rd 👍 overall
+      expect(up.data!.content).toContain("👍 for **Maya**");
+      expect(up.data!.components![0].components[0]).toMatchObject({ style: 3, label: "Maya · 4" }); // her 4th 👍 overall
+      const tooSoon = await click(`down:${sessionId}:demo-maya`, "1001");
+      expect(tooSoon.data!.content).toMatch(/⏳ You can rate \*\*Maya\*\* again <t:\d+:R>/);
+      expect(tooSoon.data!.components![0].components[1].label).toBe("1"); // her 👎 total didn't change
 
       const ban = await click(`ban:${sessionId}:demo-sam`, "1001");
-      expect(ban.data!.content).toContain("1 of 3 reports needed");
+      expect(ban.data!.content).toContain("1 report from 1 person in this lobby");
       expect(ban.data!.components![1].components[0].label).toBe("Sam 🚨 · 0");
-      expect(ban.data!.components![1].components[2]).toMatchObject({ style: 4, label: "1/3" });
+      expect(ban.data!.components![1].components[2]).toMatchObject({ style: 4, label: "1" });
+      expect((await click(`ban:${sessionId}:demo-sam`, "1001")).data!.content).toMatch(/⏳ You can report \*\*Sam\*\* again/);
       expect(ban.tasks).toHaveLength(0); // doesn't count yet: the lobby post stays as it is
 
       const form = await click(`fbopen:${sessionId}:demo-sam`, "1001");
@@ -1450,7 +1467,20 @@ describe("lobby ratings, bannable offenses and /summary", () => {
 
     // Lots of people: pages of 4, opening on the page with whoever was just rated.
     const people = ["demo-maya", "demo-dev", "demo-rosa", "demo-kai", "demo-sam", "guest-1", "guest-2", "guest-3"];
-    const blank = { sessionId: "s", open: true, people, mine: {}, myReports: [], reports: {}, myNotes: {}, totals: {} };
+    const blank = {
+      sessionId: "s",
+      open: true,
+      people,
+      lastVote: {},
+      voteReadyAt: {},
+      reportReadyAt: {},
+      myReports: {},
+      reports: {},
+      reporters: {},
+      offenses: {},
+      myNotes: {},
+      totals: {},
+    };
     const paged = ratePanelMessage(ctx, blank, "demo-kai", { focus: "guest-2" });
     expect(paged.components).toHaveLength(4); // 3 people + Previous/Next
     expect(paged.components!.at(-1)!.components.map((b) => [b.label, b.disabled])).toEqual([

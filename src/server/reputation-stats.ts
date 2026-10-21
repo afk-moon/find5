@@ -1,7 +1,7 @@
 import { eq, sql } from "drizzle-orm";
 import type { DB } from "@/db";
 import { offenseReports, playerRatings, playSessions } from "@/db/schema";
-import { REPORTS_PER_OFFENSE, reputationOf, type Reputation } from "@/engine/reputation";
+import { offensesFrom, reputationOf, type Reputation } from "@/engine/reputation";
 
 /**
  * Everyone's 👍/👎 totals and bannable offenses in a group, over all of its lobbies. Both queries go out
@@ -9,7 +9,7 @@ import { REPORTS_PER_OFFENSE, reputationOf, type Reputation } from "@/engine/rep
  */
 export async function loadReputation(db: DB, groupId: string): Promise<Map<string, Reputation>> {
   const inGroup = eq(playSessions.groupId, groupId);
-  const [votes, offenses] = await Promise.all([
+  const [votes, reports] = await Promise.all([
     db
       .select({
         userId: playerRatings.targetId,
@@ -20,20 +20,32 @@ export async function loadReputation(db: DB, groupId: string): Promise<Map<strin
       .innerJoin(playSessions, eq(playSessions.id, playerRatings.sessionId))
       .where(inGroup)
       .groupBy(playerRatings.targetId),
-    // One row per (lobby, person) with enough reports: each row is one offense.
+    // Reports per (lobby, person, reporter): offenses are counted lobby by lobby from these.
     db
-      .select({ userId: offenseReports.targetId })
+      .select({
+        sessionId: offenseReports.sessionId,
+        userId: offenseReports.targetId,
+        n: sql<number>`count(*)`.mapWith(Number),
+      })
       .from(offenseReports)
       .innerJoin(playSessions, eq(playSessions.id, offenseReports.sessionId))
       .where(inGroup)
-      .groupBy(offenseReports.sessionId, offenseReports.targetId)
-      .having(sql`count(*) >= ${REPORTS_PER_OFFENSE}`),
+      .groupBy(offenseReports.sessionId, offenseReports.targetId, offenseReports.reporterId),
   ]);
-  const ids = new Set([...votes.map((v) => v.userId), ...offenses.map((o) => o.userId)]);
+  const perLobby = new Map<string, { userId: string; counts: number[] }>();
+  for (const r of reports) {
+    const key = `${r.sessionId}:${r.userId}`;
+    const entry = perLobby.get(key) ?? { userId: r.userId, counts: [] };
+    entry.counts.push(r.n);
+    perLobby.set(key, entry);
+  }
+  const offenses = new Map<string, number>();
+  for (const { userId, counts } of perLobby.values()) offenses.set(userId, (offenses.get(userId) ?? 0) + offensesFrom(counts));
+  const ids = new Set([...votes.map((v) => v.userId), ...offenses.keys()]);
   return new Map(
     [...ids].map((id) => {
       const v = votes.find((x) => x.userId === id);
-      return [id, reputationOf(v?.up ?? 0, v?.down ?? 0, offenses.filter((o) => o.userId === id).length)];
+      return [id, reputationOf(v?.up ?? 0, v?.down ?? 0, offenses.get(id) ?? 0)];
     }),
   );
 }
