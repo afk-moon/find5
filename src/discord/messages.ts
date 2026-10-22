@@ -9,14 +9,15 @@ import {
   fmtRange,
   fmtTime,
   fmtWeekdayLong,
+  sinceStart,
   zoneAbbr,
 } from "@/lib/format";
 import { MENACE_TAG, NO_REPUTATION, OFFENSES_FOR_TAG, RATING_COOLDOWN_MS, REPORTS_PER_OFFENSE } from "@/engine/reputation";
 import { partyLabel } from "@/lib/games";
 import type { AwayResult } from "@/server/away";
 import { mainGame, sessionGame, type GameContext, type GameView, type GroupContext, type MemberView } from "@/server/context";
-import type { LateTally } from "@/server/lateness";
-import type { PartyState } from "@/server/party";
+import { attendanceOf, type LateTally } from "@/server/lateness";
+import { EVENT_WORDS, type FreeSpell, type PartyState } from "@/server/party";
 import { FEEDBACK_MAX_CHARS, type LobbyRatings } from "@/server/reputation";
 import { gamesInLobby, progressText, type GameProgress, type LiveSummary, type PlaySession } from "@/server/sessions";
 import type { WfhState } from "@/server/wfh";
@@ -74,41 +75,52 @@ export function windowsMessage(
   return { content: content.slice(0, 2000), allowed_mentions: NO_PINGS };
 }
 
-/** Late-check lines + "<name> was late" buttons for a locked-in session. */
-function lateSection(ctx: GroupContext, late: LateTally): { lines: string[]; rows: ActionRow[] } {
-  const nameOf = (id: string) => ctx.byId.get(id)?.name ?? "someone";
-  const reported = Object.entries(late.counts).sort((a, b) => b[1] - a[1]);
-  const lines: string[] = [];
-  if (late.voting === "not-started") {
-    // Worded so it still reads right after the start time (this message isn't edited when voting opens).
-    lines.push(
-      `🕒 Late check opens at ${discordTs(late.startMs)} for ${LATE_VOTING_HOURS}h. If someone shows up late, tap their name. It counts with ${late.needed}+ reports, and reports are anonymous.`,
-    );
-  } else if (late.voting === "open") {
-    lines.push(
-      `🕒 **Late check is open** (closes ${discordTs(late.closesAt, "R")}). Tap a name if they were late. It counts with ${late.needed}+ reports, and reports are anonymous.`,
-    );
-    if (reported.length) {
-      lines.push(
-        `Reports so far: ${reported.map(([id, n]) => `**${nameOf(id)}** ×${n}${n >= late.needed ? " (counts as late)" : ""}`).join(", ")}`,
-      );
-    }
-  } else {
-    const wasLate = reported.filter(([, n]) => n >= late.needed).map(([id]) => `**${nameOf(id)}**`);
-    lines.push(`🕒 Late check closed. ${wasLate.length ? `Late: ${wasLate.join(", ")}` : "Everyone was on time 🎉"}`);
-  }
+/** Ids in the group's member order, so lists don't shuffle between renders (database rows come back in any order). */
+function inMemberOrder(ctx: GroupContext, ids: readonly string[]): string[] {
+  const order = new Map(ctx.members.map((m, i) => [m.id, i]));
+  return [...ids].sort((a, b) => (order.get(a) ?? 999) - (order.get(b) ?? 999));
+}
 
-  const rows: ActionRow[] = [];
-  if (late.voting !== "closed") {
-    const buttons: Button[] = late.players.map((id) => ({
-      type: 2,
-      style: (late.counts[id] ?? 0) >= late.needed ? 4 : 2,
-      label: `${nameOf(id).slice(0, 60)} was late`,
-      custom_id: `late:${late.sessionId}:${id}`,
-    }));
-    for (let i = 0; i < buttons.length && rows.length < 5; i += 5) rows.push({ type: 1, components: buttons.slice(i, i + 5) });
+/** "9:30 PM–11 PM" as Discord timestamps (everyone sees their own zone), or "all of it". */
+const spellText = (s: FreeSpell) => (s.whole ? "all of it" : `${discordTs(s.fromMs, "t")}–${discordTs(s.untilMs, "t")}`);
+
+/**
+ * The attendance check on a locked-in post: when it opens, the counts so far, then the result. Reporting happens
+ * in a private panel (📋 Who showed up?), so the post doesn't need a button per player.
+ */
+function attendanceLines(ctx: GroupContext, t: LateTally): string[] {
+  const nameOf = (id: string) => `**${ctx.byId.get(id)?.name ?? "someone"}**`;
+  const list = (ids: readonly string[]) => inMemberOrder(ctx, ids).map(nameOf).join(", ");
+  const rule = `Each counts with ${t.needed}+ reports, and reports are anonymous.`;
+  if (t.voting === "not-started") {
+    // Worded so it still reads right after the start time (this message isn't edited when the check opens).
+    return [
+      `📋 Attendance check opens at ${discordTs(t.startMs)} for ${LATE_VOTING_HOURS}h: tap **Who showed up?** to mark who was late or never came. ${rule}`,
+    ];
   }
-  return { lines, rows };
+  if (t.voting === "open") {
+    const tally = (counts: Record<string, number>, verdict: string) =>
+      Object.entries(counts)
+        .filter(([, n]) => n > 0)
+        .sort((a, b) => b[1] - a[1])
+        .map(([id, n]) => `${nameOf(id)} ×${n}${n >= t.needed ? ` (${verdict})` : ""}`);
+    const late = tally(t.counts, "counts as late");
+    const gone = tally(t.noShows, "counts as a no-show");
+    return [
+      `📋 **Attendance check is open** (closes ${discordTs(t.closesAt, "R")}). Tap **Who showed up?** to mark who was late or never came. ${rule}`,
+      ...(late.length ? [`⏰ Late: ${late.join(", ")}`] : []),
+      ...(gone.length ? [`👻 No-show: ${gone.join(", ")}`] : []),
+    ];
+  }
+  const { late, noShow, played } = attendanceOf(t);
+  if (!late.length && !noShow.length) return ["📋 Attendance check closed. Everyone showed up on time 🎉"];
+  return [
+    [
+      `📋 Attendance check closed. ✅ Played: ${list(played) || "nobody"}`,
+      ...(late.length ? [`⏰ Late: ${list(late)}`] : []),
+      ...(noShow.length ? [`👻 No-show: ${list(noShow)}`] : []),
+    ].join(" · "),
+  ];
 }
 
 /** "🗳️ Votes to remove: **Sam** 1/2" while voting is open (counts only, so voters stay anonymous). */
@@ -120,13 +132,32 @@ function votesLine(ctx: GroupContext, party: PartyState | null | undefined): str
   return [`🗳️ Votes to remove: ${pending.map((id) => `**${nameOf(id)}** ${party.votes[id]}/${party.needed}`).join(", ")}`];
 }
 
-/** Party lines for a locked-in post: who's in (and how many short), who's out, and open votes to remove someone. */
-function partySection(ctx: GameContext, members: readonly string[], party: PartyState | null | undefined): string[] {
+/** Most changes and free people a locked-in post lists (the oldest changes are summed up). */
+const LOG_LINES = 6;
+const FREE_LINES = 8;
+
+/**
+ * Party lines for a locked-in post: who's in (and how many short), who's out, open votes to remove someone, what
+ * changed since it was locked in, and who else is free for some or all of it (they can tap ✋ Join).
+ */
+function partySection(ctx: GameContext, members: readonly string[], party: PartyState | null | undefined, startMs: number): string[] {
   const P = ctx.game.partySize;
+  const nameOf = (id: string) => `**${ctx.byId.get(id)?.name ?? "someone"}**`;
   const short = members.length < P ? ` (${members.length}/${P}, need ${P - members.length} more)` : "";
   const lines = [`Party: ${members.length ? names(ctx, members) : "nobody yet"}${short}`];
   if (party?.dropped.length) lines.push(`🙅 Can't make it: ${names(ctx, party.dropped)}`);
   if (party?.removed.length) lines.push(`🚪 Voted out: ${names(ctx, party.removed)}`);
+  if (party?.log.length) {
+    const recent = party.log.slice(-LOG_LINES);
+    const older = party.log.length - recent.length;
+    const changes = recent.map((e) => `${nameOf(e.userId)} ${EVENT_WORDS[e.kind]} ${sinceStart(e.atMs, startMs)}`);
+    lines.push(`🔁 ${older ? `${older} earlier change${older === 1 ? "" : "s"} · ` : ""}${changes.join(" · ")}`);
+  }
+  if (party?.alsoFree.length) {
+    const shown = party.alsoFree.slice(0, FREE_LINES).map((f) => `${nameOf(f.id)} (${spellText(f)})`);
+    const more = party.alsoFree.length - shown.length;
+    lines.push(`🕘 Also free: ${shown.join(", ")}${more ? ` and ${more} more` : ""}. Tap ✋ Join to play, even for part of it.`);
+  }
   return [...lines, ...votesLine(ctx, party)];
 }
 
@@ -151,26 +182,28 @@ export function plannedSessionMessage(
         return [];
     }
   });
-  const lateBits = late ? lateSection(ctx, late) : { lines: [], rows: [] };
-  // Discord allows 5 rows of buttons: late buttons get up to 4, and the party buttons the last one.
-  const rows = lateBits.rows.slice(0, party?.open ? 4 : 5);
+  // One row: the attendance check once it's open, then Join / Can't make it / Vote someone out until it ends.
+  const buttons: Button[] = [];
+  if (late?.voting === "open") {
+    buttons.push({ type: 2, style: 1, label: "Who showed up?", emoji: { name: "📋" }, custom_id: `check:${late.sessionId}` });
+  }
   if (party?.open) {
-    rows.push({
-      type: 1,
-      components: [
-        { type: 2, style: 2, label: "Can't make it", emoji: { name: "🙅" }, custom_id: `drop:${party.sessionId}` },
-        { type: 2, style: 2, label: "Vote someone out", emoji: { name: "🗳️" }, custom_id: `kickmenu:${party.sessionId}` },
-      ],
-    });
+    buttons.push(
+      { type: 2, style: 2, label: "Join", emoji: { name: "✋" }, custom_id: `join:${party.sessionId}` },
+      { type: 2, style: 2, label: "Can't make it", emoji: { name: "🙅" }, custom_id: `drop:${party.sessionId}` },
+      { type: 2, style: 2, label: "Vote someone out", emoji: { name: "🗳️" }, custom_id: `kickmenu:${party.sessionId}` },
+    );
   }
   return {
     content: [
       `🔒 **Locked in: ${ctx.game.name}** ${discordTs(s.startMs, "F")} (${discordTs(s.startMs, "R")})`,
-      ...partySection(ctx, members, party),
+      ...partySection(ctx, members, party, s.startMs),
       ...lines,
-      ...lateBits.lines,
-    ].join("\n"),
-    components: rows,
+      ...(late ? attendanceLines(ctx, late) : []),
+    ]
+      .join("\n")
+      .slice(0, 2000),
+    components: buttons.length ? [{ type: 1, components: buttons }] : [],
     allowed_mentions: { users: discordIdsOf(ctx, members) },
   };
 }
@@ -188,6 +221,84 @@ export function storedPlannedMessage(ctx: GroupContext, session: PlaySession, la
     late,
     party,
   );
+}
+
+/** Players per page in the attendance panel: 4 rows, plus one for ➕ and paging (Discord allows 5). */
+const CHECK_PER_PAGE = 4;
+
+/**
+ * 📋 Who showed up? The private attendance panel for a locked-in session (only the viewer sees it): a row per
+ * player with ⏰ late and 👻 no-show (labels show the counts so far; the viewer's own reports are lit), the
+ * viewer's own row grayed out, ✅ for anyone seen in a lobby during the session, and ➕ for someone who played
+ * without being in the party. Pages of 4; it opens on `page`, or on the page with `focus`.
+ */
+export function attendancePanelMessage(
+  ctx: GroupContext,
+  t: LateTally,
+  viewerId: string,
+  { page = 0, focus, note }: { page?: number; focus?: string; note?: string } = {},
+): DiscordMessage {
+  const nameOf = (id: string) => (ctx.byId.get(id)?.name ?? "someone").slice(0, 40);
+  const people = inMemberOrder(ctx, t.players);
+  const pages = Math.max(1, Math.ceil(people.length / CHECK_PER_PAGE));
+  const at = focus && people.includes(focus) ? Math.floor(people.indexOf(focus) / CHECK_PER_PAGE) : page;
+  const p = Math.min(Math.max(0, at), pages - 1);
+  const rows: ActionRow[] = people.slice(p * CHECK_PER_PAGE, (p + 1) * CHECK_PER_PAGE).map((id) => {
+    const you = id === viewerId;
+    const late: Button = {
+      type: 2,
+      style: t.mine.includes(id) ? 4 : 2,
+      emoji: { name: "⏰" },
+      label: `${nameOf(id)}${you ? " (you)" : ""} late · ${t.counts[id] ?? 0}/${t.needed}`,
+      custom_id: `chkl:${t.sessionId}:${id}`,
+      disabled: you,
+    };
+    const gone: Button = t.seen.includes(id)
+      ? { type: 2, style: 3, emoji: { name: "✅" }, label: "In the lobby", custom_id: `chkn:${t.sessionId}:${id}`, disabled: true }
+      : {
+          type: 2,
+          style: t.mineNoShow.includes(id) ? 4 : 2,
+          emoji: { name: "👻" },
+          label: `No-show · ${t.noShows[id] ?? 0}/${t.needed}`,
+          custom_id: `chkn:${t.sessionId}:${id}`,
+          disabled: you,
+        };
+    return { type: 1, components: [late, gone] };
+  });
+  const bottom: Button[] = [{ type: 2, style: 2, emoji: { name: "➕" }, label: "Someone else played", custom_id: `chka:${t.sessionId}` }];
+  if (pages > 1) {
+    bottom.push(
+      { type: 2, style: 2, label: "◀ Previous", custom_id: `chkp:${t.sessionId}:${p - 1}`, disabled: p === 0 },
+      { type: 2, style: 2, label: `Next ▶ (${p + 1}/${pages})`, custom_id: `chkp:${t.sessionId}:${p + 1}`, disabled: p === pages - 1 },
+    );
+  }
+  rows.push({ type: 1, components: bottom });
+  const open = t.voting === "open";
+  const help = open
+    ? `📋 **Who showed up?** (only you see this). Tap ⏰ if they were late or 👻 if they never came; each counts with ${t.needed}+ reports, and reports are anonymous. Tap again to take yours back. ✅ means they tapped in on a lobby during the session.`
+    : t.voting === "closed"
+      ? "The attendance check for this session is closed."
+      : `The attendance check opens when the session starts (${discordTs(t.startMs, "R")}).`;
+  return { content: [note, help].filter(Boolean).join("\n"), components: open ? rows : [], allowed_mentions: { parse: [] } };
+}
+
+/** ➕ Someone else played: a button per group member who isn't a player in the session (only the viewer sees it). */
+export function addPlayerPickerMessage(ctx: GroupContext, t: LateTally, candidates: readonly string[]): DiscordMessage {
+  const buttons: Button[] = candidates.slice(0, 20).map((id) => ({
+    type: 2,
+    style: 2,
+    label: (ctx.byId.get(id)?.name ?? "someone").slice(0, 80),
+    custom_id: `chkadd:${t.sessionId}:${id}`,
+  }));
+  const rows = rowsOf(buttons).slice(0, 4);
+  rows.push({ type: 1, components: [{ type: 2, style: 2, label: "◀ Back", custom_id: `chkp:${t.sessionId}:0` }] });
+  return {
+    content: candidates.length
+      ? "➕ **Who else played?** Pick someone who played without being in the party; they're added to the session (only you see this)."
+      : "Everyone in the group is already in this session.",
+    components: t.voting === "open" ? rows : [],
+    allowed_mentions: { parse: [] },
+  };
 }
 
 /**

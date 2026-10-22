@@ -110,7 +110,7 @@ export default async function WindowsPage({ searchParams }: { searchParams: Prom
         {planned.length > 0 && (
           <div className="space-y-2">
             <div className="label">Locked in</div>
-            {planned.map(({ session, players, votes }) => {
+            {planned.map(({ session, players, votes, events }) => {
               const w = {
                 startMs: session.startAt.getTime(),
                 endMs: session.endAt!.getTime(),
@@ -119,7 +119,7 @@ export default async function WindowsPage({ searchParams }: { searchParams: Prom
               const started = w.startMs <= now;
               const late = lateChecks.get(session.id);
               const its = sessionGame(ctx, session);
-              const party = partyOf(ctx, session, players, votes, me.id, now);
+              const party = partyOf(ctx, session, players, votes, me.id, now, events);
               return (
                 <div key={session.id} className="card space-y-3 border-free/40">
                   <div className="flex flex-wrap items-center justify-between gap-2">
@@ -150,7 +150,7 @@ export default async function WindowsPage({ searchParams }: { searchParams: Prom
                   </div>
                   <TimelineBar {...w} />
                   <SessionPlan ctx={its} w={w} zone={zone} />
-                  <PartyCheck ctx={ctx} party={party} partySize={its.game.partySize} viewerId={me.id} />
+                  <PartyCheck ctx={ctx} party={party} partySize={its.game.partySize} viewerId={me.id} startMs={w.startMs} zone={zone} />
                   {late ? (
                     <LateCheck ctx={ctx} tally={late} viewerId={me.id} now={now} />
                   ) : (

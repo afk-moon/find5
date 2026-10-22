@@ -7,7 +7,7 @@ import { discordTs } from "@/lib/format";
 import { partyLabel } from "@/lib/games";
 import { setAwayUntil } from "@/server/away";
 import { findGame, forGame, gamesOf, loadGroupContext, type GameView, type GroupContext, type MemberView } from "@/server/context";
-import { getLateTally, toggleLateReport } from "@/server/lateness";
+import { addableTo, addPlayer, getLateTally, toggleLateReport, toggleNoShowReport } from "@/server/lateness";
 import {
   freeNowNotInLobby,
   markLobbyReplaced,
@@ -22,6 +22,7 @@ import {
   getParty,
   kickOptions,
   partyOf,
+  joinSession,
   toggleDropOut,
   toggleKickVote,
   type PartyState,
@@ -41,6 +42,8 @@ import {
 import { clearBallot, ensureVote, getWfhState, toggleBallotDay, weekStartOf } from "@/server/wfh";
 import { upcomingWindows } from "@/server/windows";
 import {
+  addPlayerPickerMessage,
+  attendancePanelMessage,
   awayMessage,
   feedbackModal,
   kickChoiceMessage,
@@ -380,6 +383,58 @@ async function onButton(i: Interaction, ctx: GroupContext, me: MemberView, defer
         : "✅ You're back in the party.",
     );
     return update(storedPlannedMessage(ctx, late.session, late.tally, result.party));
+  }
+
+  // Locked-in posts: ✋ Join, before or after the start (a sub, someone late, or free for only part of it).
+  if (kind === "join") {
+    const sessionId = a;
+    const result = await joinSession(ctx, sessionId, me.id);
+    const late = (await getLateTally(ctx.group.id, sessionId, me.id))!;
+    if (late.session.discordEventId) defer(() => syncPlannedMessage(ctx, sessionId)); // refreshes the server event too
+    whisper(result.rejoined ? "✅ You're back in the party." : "✋ You're in the party. Can't make it after all? Tap “Can't make it”.");
+    return update(storedPlannedMessage(ctx, late.session, late.tally, result.party));
+  }
+
+  // Locked-in posts: "📋 Who showed up?" opens a private attendance panel; its buttons update it in place.
+  if (kind === "check" || kind === "chkp") {
+    const found = await getLateTally(ctx.group.id, a, me.id);
+    if (!found) return ephemeral("That session isn't available anymore.");
+    if (kind === "chkp") return update(attendancePanelMessage(ctx, found.tally, me.id, { page: Number(b) || 0 }));
+    const { tally } = found;
+    if (tally.voting === "closed") return ephemeral("The attendance check for this session is closed.");
+    if (tally.voting === "not-started") {
+      return ephemeral(`📋 The attendance check opens when the session starts (${discordTs(tally.startMs, "R")}).`);
+    }
+    if (!tally.players.includes(me.id)) {
+      return ephemeral("Only players in this session can report. Played without joining? A teammate can add you with ➕ Someone else played.");
+    }
+    return { type: 4, data: { ...attendancePanelMessage(ctx, tally, me.id), flags: EPHEMERAL } };
+  }
+
+  // ⏰ late / 👻 no-show from the attendance panel (late or no-show, not both). The shared post shows the counts.
+  if (kind === "chkl" || kind === "chkn") {
+    const late = kind === "chkl";
+    const { reported, tally } = late ? await toggleLateReport(ctx, a, me.id, b) : await toggleNoShowReport(ctx, a, me.id, b);
+    defer(() => syncPlannedMessage(ctx, a));
+    const name = ctx.byId.get(b)?.name ?? "them";
+    const n = (late ? tally.counts[b] : tally.noShows[b]) ?? 0;
+    const note = reported
+      ? `${late ? "⏰" : "👻"} You reported **${name}** as ${late ? "late" : "a no-show"} (${n} of ${tally.needed} reports${n >= tally.needed ? ", so it counts" : ""}).`
+      : `↩️ Took back your ${late ? "late" : "no-show"} report for **${name}**.`;
+    return update(attendancePanelMessage(ctx, tally, me.id, { focus: b, note }));
+  }
+
+  // ➕ Someone else played: pick a member who played without being in the party, and they're added.
+  if (kind === "chka") {
+    const found = await getLateTally(ctx.group.id, a, me.id);
+    if (!found) return ephemeral("That session isn't available anymore.");
+    return update(addPlayerPickerMessage(ctx, found.tally, addableTo(ctx, found.tally)));
+  }
+  if (kind === "chkadd") {
+    const { tally } = await addPlayer(ctx, a, me.id, b);
+    defer(() => syncPlannedMessage(ctx, a));
+    const note = `➕ Added **${ctx.byId.get(b)?.name ?? "them"}** to the session as having played.`;
+    return update(attendancePanelMessage(ctx, tally, me.id, { focus: b, note }));
   }
 
   // "Vote someone out" (lobby and locked-in posts) opens a private picker with a button per person.

@@ -47,15 +47,26 @@ export interface SessionLateRecord {
 
 /** Valid report counts per player: one per reporter, from other players in the session only. */
 export function lateReportCounts(s: SessionLateRecord): Map<string, number> {
-  const players = new Set(s.players);
+  return reportCounts(
+    s.players,
+    s.reports.map((r) => ({ reporterId: r.reporterId, targetId: r.lateUserId })),
+  );
+}
+
+/** Counts per player from any kind of report about them (late, no-show): one per reporter, players only. */
+export function reportCounts(
+  playerIds: readonly string[],
+  reports: ReadonlyArray<{ reporterId: string; targetId: string }>,
+): Map<string, number> {
+  const players = new Set(playerIds);
   const seen = new Set<string>();
   const counts = new Map<string, number>();
-  for (const r of s.reports) {
-    if (r.reporterId === r.lateUserId || !players.has(r.reporterId) || !players.has(r.lateUserId)) continue;
-    const key = `${r.reporterId}>${r.lateUserId}`;
+  for (const r of reports) {
+    if (r.reporterId === r.targetId || !players.has(r.reporterId) || !players.has(r.targetId)) continue;
+    const key = `${r.reporterId}>${r.targetId}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    counts.set(r.lateUserId, (counts.get(r.lateUserId) ?? 0) + 1);
+    counts.set(r.targetId, (counts.get(r.targetId) ?? 0) + 1);
   }
   return counts;
 }

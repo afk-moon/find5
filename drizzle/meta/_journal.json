@@ -57,6 +57,13 @@
       "when": 1792550665791,
       "tag": "0007_repeat_ratings",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1792693877213,
+      "tag": "0008_session_attendance",
+      "breakpoints": true
     }
   ]
 }

@@ -19,14 +19,16 @@ line up their work-from-home days. It's a web app plus an optional Discord bot.
   everyone taps I'm in again.
 - **DM when a 5-stack fills:** muted the server? Tick 📩 under **My availability → Profile** and the bot DMs
   you when a lobby you're in fills a 5-stack for a game you play.
-- **Can't make it / vote out:** on a locked-in session, anyone can tap 🙅 **Can't make it**, and teammates
-  can vote out someone who's late or not coming (2 votes; 1 in a duo). The lobby has 🗳️ **Vote someone
+- **Join, can't make it, vote out:** on a locked-in session, anyone can tap ✋ **Join** (before or after the
+  start, even for part of it) or 🙅 **Can't make it**, and teammates can vote out someone who's late or not
+  coming (2 votes; 1 in a duo). The post keeps a log of who joined and left, and lists who else is free. The lobby has 🗳️ **Vote someone
   out** too, for someone who tapped in but isn't around, and `/votekick @name` works for both.
 - **Ratings & feedback:** in a lobby, 👍/👎 your teammates and report 🚫 bannable offenses, as often as every
   2 minutes per person (every 3 reports from 3 different people make an offense, and 3 offenses earn a comic
   🚨 **Certified Menace** tag), and leave anonymous feedback. `/summary @name` shows someone's numbers and every note people wrote about them.
-- **Late reports:** once a locked-in session starts, teammates can report who was late. Anyone late in
-  more than half of their last 10 sessions gets a ⏰ **Frequently late** tag next to their name.
+- **Who showed up:** once a locked-in session starts, teammates mark who was late or never came, and add
+  anyone who played without joining. Anyone late in more than half of their last 10 sessions gets a
+  ⏰ **Frequently late** tag next to their name.
 - **Discord:** login, slash commands, lobby buttons, announcements, and Scheduled Events.
 
 ---
@@ -132,7 +134,7 @@ Things to try:
 - Lock in a window.
 - Open a **Live** lobby.
 - Vote on **WFH sync** as Maya or Kai (they're the hybrid workers).
-- Try the ⏰ **late check** on the Windows page. The demo data includes a session that started about 2
+- Try the 📋 **Who showed up?** check on the Windows page. The demo data includes a session that started about 2
   hours before your first run, and its late check stays open for 24 hours (`npm run db:reset` gives you a
   fresh one). Maya already reported Sam, so one more report from anyone else makes it count. Sam
   already has the **Frequently late** tag from the demo history.
@@ -240,17 +242,23 @@ game: it pings whoever is free right now, and as people join it shows each game'
   of them in bigger lobbies), and votes are anonymous. They leave the lobby's count, and can tap I'm in to
   come back with a clean slate.
 
-**Can't make it / vote out.** On a locked-in session (its card on the Windows page, or its Discord post):
-- 🙅 **Can't make it** takes you out of the party. Tap again to rejoin, any time until the session ends.
+**Join, can't make it, vote out.** On a locked-in session (its card on the Windows page, or its Discord post):
+- ✋ **Join** puts you in the party, before or after the start, until the session ends: a sub, someone
+  running late, or someone free for only part of it. The party is otherwise the people free for the *whole*
+  window when it was locked in, and later schedule changes don't add anyone.
+- 🕘 **Also free** lists who else plays the game and is free by their schedule for some or all of what's left
+  (with their times), so they know they can join.
+- 🙅 **Can't make it** takes you out of the party. Tap again (or ✋ Join) to rejoin, any time until it ends.
 - 🗳️ **Vote someone out** if a teammate is late or isn't coming. It takes 2 votes (1 in a duo; half of the
   others in parties over 5), counted from the party that locked in, so people dropping out don't lower it.
   Votes are anonymous and can be taken back. Someone voted out can't rejoin that session.
-- The post shows who's still in (“4/5, need 1 more”), who can't make it, who was voted out, and open votes.
-  In Discord, the vote buttons open in a private picker that only you see.
+- The post shows who's still in (“4/5, need 1 more”), who can't make it, who was voted out, open votes, and
+  a 🔁 log of every change since it was locked in, timed from the start (“Kai left 30m before · Rosa joined
+  40m in”). In Discord, the vote buttons open in a private picker that only you see.
 - `/votekick @name` votes them out wherever they are with you: the lobby or a locked-in session. If it's
   more than one, it asks which. Running it again doesn't undo your vote; tap their name in the picker for that.
-- Leaving before the start takes you out of the late check; leaving after it doesn't, so dropping out
-  can't wipe a late report.
+- Leaving before the start takes you out of the attendance check; leaving after it doesn't, so dropping out
+  can't wipe a report.
 
 **Ratings and feedback.** In a lobby, **⭐ Rate players** (a button on the lobby post, or the card under the
 lobby on the Live page) lists everyone who joined it, except people who said “Not tonight”. You're on it
@@ -271,14 +279,20 @@ too, grayed out: your own numbers, with nothing to tap.
   typed (no formatting, pings or link previews; line breaks become spaces). A long history continues in
   follow-up posts, up to 10 (`SUMMARY_MAX_POSTS` in `src/discord/messages.ts`).
 
-**Late reports.** These work on locked-in sessions, from the Windows page or the buttons on the
-session's Discord post.
-- Reporting opens at the session's start time and stays open for 24 hours. Before that, the buttons
-  only say when it opens.
-- Only players in that session can report, and not themselves. Tap again to take a report back.
-- Someone counts as late once at least half of the *other* players report them (2 of 4 in a 5-stack),
-  so one person can't mark someone late alone.
-- Everyone sees the counts, but not who reported whom.
+**Who showed up? (late and no-show reports).** These work on locked-in sessions, so they don't depend on
+anyone tapping into the `/lfg` lobby. On the Windows page it's a card with the players folded away; in
+Discord it's one 📋 **Who showed up?** button on the post that opens a private panel (only you see it).
+- Reporting opens at the session's start time and stays open for 24 hours.
+- For each player: ⏰ **Late** or 👻 **No-show** (never came). One or the other: picking one takes back your
+  other report for them. Tap again to take a report back.
+- ➕ **Someone else played** adds a member who played without being in the party, so they're in the record.
+- Only players in that session can report, and not themselves.
+- Someone counts as late (or a no-show) once at least half of the *other* players report them (2 of 4 in a
+  5-stack), so one person can't decide it alone.
+- Anyone who tapped in on a lobby while the session was on gets a ✅ and can't be reported as a no-show. The
+  lobby only ever confirms people, since not everyone uses it.
+- Everyone sees the counts, but not who reported whom. When the check closes, the post shows the result:
+  who played, who was late, who didn't show.
 - **⏰ Frequently late** = late in more than half (over 50%) of their most recent 10 sessions. A session
   counts once its 24 hours of voting are over, and the tag needs at least 3 finished sessions, so one bad
   night doesn't tag a new member.
@@ -346,10 +360,9 @@ in Discord, reload it (Ctrl+R, or restart the phone app). If it warns that older
 (each command shows up twice), run `npm run discord:register -- --remove-global`.
 
 Locking in a window posts the plan and creates a Discord Scheduled Event; Discord notifies everyone who
-taps “Interested”. The post also has a “*name* was late” button for each player. These work once the
-session starts: the post shows only the counts, and the person who tapped gets a private confirmation.
-It also has 🙅 **Can't make it** and 🗳️ **Vote someone out** buttons, and the event's party list follows
-along until the session starts.
+taps “Interested”. The post has ✋ **Join**, 🙅 **Can't make it** and 🗳️ **Vote someone out** buttons, and
+the event's party list follows along until the session starts. Once it starts, a 📋 **Who showed up?**
+button opens the private attendance panel; the post itself shows only the counts.
 
 DMs (for people who tick 📩 in their profile) need no extra bot permission. Discord only delivers them if
 that person allows DMs from members of your server (right-click the server → Privacy Settings → Direct
@@ -391,7 +404,7 @@ connecting it.
 
 `vercel.json` runs `/api/cron/daily` once a day. It opens next week's WFH vote on the group's “open”
 weekday (Thu by default) and decides it on the “close” weekday (Fri). It also updates the Discord posts of
-late checks that have closed, showing who was late and removing the buttons.
+attendance checks that have closed, showing who played, who was late and who didn't show, and removing the buttons.
 
 `vercel.json` also runs the app in Portland (`"regions": ["pdx1"]`), next to the Neon database. Every page
 waits on the database, so the app should run in the same region as it. If your database is somewhere

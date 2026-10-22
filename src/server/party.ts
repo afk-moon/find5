@@ -1,15 +1,18 @@
 import { and, eq } from "drizzle-orm";
 import { getDb } from "@/db";
-import { kickVotes, playSessionPlayers, playSessions, type PlayerStatus } from "@/db/schema";
-import { lateReportsNeeded } from "@/engine";
-import type { GroupContext } from "./context";
+import { kickVotes, playSessionPlayers, type PlayerStatus, type SessionEventKind } from "@/db/schema";
+import { SLOT_MS, buildTimelines, lateReportsNeeded, makeHorizon } from "@/engine";
+import { sessionGame, type GroupContext } from "./context";
 import {
   activeLive,
+  getSession,
   LOBBY_STATUSES,
   lobbyExpired,
+  logSessionEvent,
   upcomingPlanned,
   type KickVote,
   type PlaySession,
+  type SessionEvent,
   type SessionPlayer,
 } from "./sessions";
 
@@ -51,6 +54,52 @@ export interface PartyState {
   mine: string[];
   /** Votes (and drop-outs) are allowed until a locked-in session ends, or while the lobby is open. */
   open: boolean;
+  /** A locked-in party's changes since it was locked in, oldest first (who joined, left, rejoined, was removed). */
+  log: SessionEvent[];
+  /** People in the party who weren't when it was locked in (they tapped ✋ Join, or were added after the start). */
+  joined: string[];
+  /** Who else plays the game and is free by their schedule for some or all of what's left (while it's open). */
+  alsoFree: FreeSpell[];
+}
+
+/** How each change reads in a locked-in party's change log (Discord post and website). */
+export const EVENT_WORDS: Record<SessionEventKind, string> = {
+  joined: "joined",
+  left: "left",
+  rejoined: "rejoined",
+  removed: "was voted out",
+  added: "played (added by a teammate)",
+};
+
+/** When someone outside a locked-in party is free during it, by their schedule. */
+export interface FreeSpell {
+  id: string;
+  fromMs: number;
+  untilMs: number;
+  /** Free for all of what's left of the session. */
+  whole: boolean;
+}
+
+/**
+ * Who else plays a locked-in session's game and is free by their schedule for some or all of what's left of it:
+ * people who weren't free for the whole window when it was locked in, or changed their schedule since. They
+ * can tap ✋ Join. (People who left or were voted out are listed as such instead.)
+ */
+function alsoFree(ctx: GroupContext, session: PlaySession, players: readonly SessionPlayer[], nowMs: number): FreeSpell[] {
+  if (!session.endAt) return [];
+  const taken = new Set(players.map((p) => p.userId));
+  const inputs = sessionGame(ctx, session).inputs.filter((m) => !taken.has(m.id));
+  const from = Math.max(session.startAt.getTime(), nowMs);
+  const h = makeHorizon(from, session.endAt.getTime());
+  if (!inputs.length || !h.slots) return [];
+  const rows = buildTimelines(inputs, h);
+  return inputs.flatMap((m, i) => {
+    const free = rows[i].map((state) => state === "F" || state === "M");
+    const first = free.indexOf(true);
+    if (first < 0) return [];
+    const last = free.lastIndexOf(true);
+    return [{ id: m.id, fromMs: Math.max(from, h.startMs + first * SLOT_MS), untilMs: h.startMs + (last + 1) * SLOT_MS, whole: free.every(Boolean) }];
+  });
 }
 
 export function partyOf(
@@ -60,6 +109,7 @@ export function partyOf(
   votes: readonly KickVote[],
   viewerId: string | null,
   nowMs = Date.now(),
+  events: readonly SessionEvent[] = [],
 ): PartyState {
   // Member order, so lists don't shuffle between renders (database rows come back in any order).
   const order = new Map(ctx.members.map((m, i) => [m.id, i]));
@@ -87,25 +137,18 @@ export function partyOf(
     needed: kickVotesNeeded(live ? voters.length : sorted.length),
     mine: viewerId ? counted.filter((v) => v.voterId === viewerId).map((v) => v.targetId) : [],
     open,
+    log: live ? [] : [...events],
+    joined: party.filter((id) => events.some((e) => e.userId === id && (e.kind === "joined" || e.kind === "added"))),
+    alsoFree: !live && open ? alsoFree(ctx, session, players, nowMs) : [],
   };
 }
 
 /** A session (locked-in or lobby) with its party, or null if it doesn't exist or was cancelled. */
 export async function getParty(ctx: GroupContext, sessionId: string, viewerId: string | null = null, nowMs = Date.now()) {
-  const db = await getDb();
-  const [[session], players, votes] = await Promise.all([
-    db
-      .select()
-      .from(playSessions)
-      .where(and(eq(playSessions.id, sessionId), eq(playSessions.groupId, ctx.group.id))),
-    db.select().from(playSessionPlayers).where(eq(playSessionPlayers.sessionId, sessionId)),
-    db
-      .select({ voterId: kickVotes.voterId, targetId: kickVotes.targetId })
-      .from(kickVotes)
-      .where(eq(kickVotes.sessionId, sessionId)),
-  ]);
-  if (!session || session.status === "cancelled") return null;
-  return { session, party: partyOf(ctx, session, players, votes, viewerId, nowMs) };
+  const found = await getSession(ctx.group.id, sessionId);
+  if (!found || found.session.status === "cancelled") return null;
+  const { session, players, votes, events } = found;
+  return { session, party: partyOf(ctx, session, players, votes, viewerId, nowMs, events) };
 }
 
 async function openParty(ctx: GroupContext, sessionId: string, viewerId: string, nowMs: number) {
@@ -132,8 +175,28 @@ export async function toggleDropOut(ctx: GroupContext, sessionId: string, userId
   const dropping = party.party.includes(userId);
   if (!dropping && !party.dropped.includes(userId)) throw new Error("You're not in this session.");
   await setStatus(sessionId, userId, dropping ? DROPPED : "in", nowMs);
+  await logSessionEvent(sessionId, userId, dropping ? "left" : "rejoined", nowMs);
   const after = (await getParty(ctx, sessionId, userId, nowMs))!;
   return { dropped: dropping, ...after };
+}
+
+/**
+ * ✋ Join a locked-in session, before or after it starts (until it ends): a sub, someone running late, or someone
+ * free for only part of it. Someone who said they can't make it is back in the party.
+ */
+export async function joinSession(ctx: GroupContext, sessionId: string, userId: string, nowMs = Date.now()) {
+  const { session, party } = await openParty(ctx, sessionId, userId, nowMs);
+  if (session.kind === "live") throw new Error("In a lobby, tap I'm in instead.");
+  if (party.removed.includes(userId)) throw new Error("You were voted out of this one.");
+  if (party.party.includes(userId)) throw new Error("You're already in this session.");
+  const rejoin = party.dropped.includes(userId);
+  if (rejoin) await setStatus(sessionId, userId, "in", nowMs);
+  else {
+    const db = await getDb();
+    await db.insert(playSessionPlayers).values({ sessionId, userId, status: "in", updatedAt: new Date(nowMs) }).onConflictDoNothing();
+  }
+  await logSessionEvent(sessionId, userId, rejoin ? "rejoined" : "joined", nowMs);
+  return { rejoined: rejoin, ...(await getParty(ctx, sessionId, userId, nowMs))! };
 }
 
 /**
@@ -173,6 +236,7 @@ async function kickVote(
   if (removed) {
     await setStatus(sessionId, targetId, KICKED, nowMs);
     await db.delete(kickVotes).where(and(eq(kickVotes.sessionId, sessionId), eq(kickVotes.targetId, targetId)));
+    if (!live) await logSessionEvent(sessionId, targetId, "removed", nowMs);
     after = (await getParty(ctx, sessionId, voterId, nowMs))!;
   }
   return { voted, changed: voted !== had, removed, ...after };
@@ -193,7 +257,7 @@ export const castKickVote = (ctx: GroupContext, sessionId: string, voterId: stri
 export async function kickOptions(ctx: GroupContext, voterId: string, targetId: string, nowMs = Date.now()) {
   const [live, planned] = await Promise.all([activeLive(ctx.group, nowMs), upcomingPlanned(ctx.group.id, nowMs)]);
   return [...(live ? [live] : []), ...planned]
-    .map((s) => ({ session: s.session, party: partyOf(ctx, s.session, s.players, s.votes, voterId, nowMs) }))
+    .map((s) => ({ session: s.session, party: partyOf(ctx, s.session, s.players, s.votes, voterId, nowMs, s.events) }))
     .filter(({ party }) => party.open && party.party.includes(targetId))
     .map((o) => ({ ...o, canVote: o.party.voters.includes(voterId) && voterId !== targetId }));
 }

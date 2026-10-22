@@ -73,6 +73,15 @@ export function fmtRelative(ms: number, nowMs = Date.now()): string {
 }
 
 /** Discord renders <t:unix:style> in each reader's own time zone. */
+/** When something happened, from a session's start: "3h before", "at the start", "40m in". */
+export function sinceStart(atMs: number, startMs: number): string {
+  const min = Math.round((atMs - startMs) / 60_000);
+  const d = Math.abs(min);
+  if (d < 5) return "at the start";
+  const span = d < 60 ? `${d}m` : d < 48 * 60 ? `${Math.round(d / 60)}h` : `${Math.round(d / 1440)}d`;
+  return min < 0 ? `${span} before` : `${span} in`;
+}
+
 export function discordTs(ms: number, style: "t" | "T" | "d" | "D" | "f" | "F" | "R" = "t"): string {
   return `<t:${Math.floor(ms / 1000)}:${style}>`;
 }

@@ -23,7 +23,7 @@ import {
 } from "@/server/availability";
 import { forGame, loadGroupContext, requireViewer, type GroupContext } from "@/server/context";
 import { addGame, removeGame, setMemberGames, updateGame } from "@/server/games";
-import { toggleLateReport } from "@/server/lateness";
+import { addPlayer, toggleLateReport, toggleNoShowReport } from "@/server/lateness";
 import {
   announceLockIn,
   announceWfhDecision,
@@ -32,7 +32,7 @@ import {
   syncSessionPost,
   syncWfhVote,
 } from "@/server/notify";
-import { toggleDropOut, toggleKickVote } from "@/server/party";
+import { joinSession, toggleDropOut, toggleKickVote } from "@/server/party";
 import { addFeedback, rate, reportOffense } from "@/server/reputation";
 import { SESSION_COOKIE } from "@/server/session-cookie";
 import {
@@ -197,6 +197,45 @@ export async function toggleLateReportAction(sessionId: string, lateUserId: stri
     await syncPlannedMessage(ctx, sessionId);
     refreshAll();
     return { ok: true };
+  } catch (e) {
+    return actionError(e);
+  }
+}
+
+/** 👻 No-show report from a locked-in session's attendance check (tap again to take it back). */
+export async function toggleNoShowAction(sessionId: string, targetId: string): Promise<ActionResult> {
+  const { ctx, userId } = await requireViewer();
+  try {
+    await toggleNoShowReport(ctx, sessionId, userId, targetId);
+    await syncPlannedMessage(ctx, sessionId);
+    refreshAll();
+    return { ok: true };
+  } catch (e) {
+    return actionError(e);
+  }
+}
+
+/** ➕ Someone else played: add a member who played without being in the party. */
+export async function addPlayerAction(sessionId: string, targetId: string): Promise<ActionResult> {
+  const { ctx, userId } = await requireViewer();
+  try {
+    await addPlayer(ctx, sessionId, userId, targetId);
+    await syncPlannedMessage(ctx, sessionId);
+    refreshAll();
+    return { ok: true, message: `Added ${ctx.byId.get(targetId)?.name ?? "them"}` };
+  } catch (e) {
+    return actionError(e);
+  }
+}
+
+/** ✋ Join a locked-in session, before or after it starts (until it ends). */
+export async function joinSessionAction(sessionId: string): Promise<ActionResult> {
+  const { ctx, userId } = await requireViewer();
+  try {
+    const { rejoined } = await joinSession(ctx, sessionId, userId);
+    await syncPlannedMessage(ctx, sessionId);
+    refreshAll();
+    return { ok: true, message: rejoined ? "You're back in 🎮" : "You're in 🎮" };
   } catch (e) {
     return actionError(e);
   }

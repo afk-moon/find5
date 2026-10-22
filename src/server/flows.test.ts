@@ -27,10 +27,10 @@ const {
 } = await import("./sessions");
 const { getWfhState, toggleBallotDay, closeVote, reopenVote, weekStartOf } = await import("./wfh");
 const { saveProfile, saveDateOverride, createMember, saveWfhWeek, addVacation, removeVacation } = await import("./availability");
-const { openLateVotes, toggleLateReport, getLateTally } = await import("./lateness");
+const { openLateVotes, toggleLateReport, getLateTally, toggleNoShowReport, addPlayer, attendanceOf } = await import("./lateness");
 const { setAwayUntil, resolveBackTime } = await import("./away");
 const { freeNowNotInLobby, stackDms } = await import("./notify");
-const { getParty, toggleDropOut, toggleKickVote, kickVotesNeeded, partyOf } = await import("./party");
+const { getParty, toggleDropOut, toggleKickVote, kickVotesNeeded, partyOf, joinSession } = await import("./party");
 const { rate, reportOffense, addFeedback, feedbackAbout, FEEDBACK_MAX_CHARS } = await import("./reputation");
 const { offensesFrom } = await import("@/engine/reputation");
 const {
@@ -289,7 +289,7 @@ describe("late reports", () => {
 
     const closed = await click(`late:${closedSession().sessionId}:demo-sam`);
     expect(closed.type).toBe(7);
-    expect(closed.data!.content).toContain("Late check closed");
+    expect(closed.data!.content).toContain("Attendance check closed");
     expect(closed.data!.components).toEqual([]);
   });
 });
@@ -892,7 +892,7 @@ describe("locked-in party", () => {
     expect(msg.content).toContain(`🙅 Can't make it: ${mention(ctx.byId.get("demo-kai"))}`);
     expect(msg.content).toContain(`🚪 Voted out: ${mention(ctx.byId.get("demo-sam"))}`);
     expect(msg.content).toContain("🗳️ Votes to remove: **Rosa** 1/2");
-    expect(msg.components!.at(-1)!.components.map((b) => b.custom_id)).toEqual([`drop:${s.id}`, `kickmenu:${s.id}`]);
+    expect(msg.components!.at(-1)!.components.map((b) => b.custom_id)).toEqual([`join:${s.id}`, `drop:${s.id}`, `kickmenu:${s.id}`]);
     assertDiscordLimits(msg);
 
     const over = (await getParty(ctx, s.id, null, s.endAt!.getTime() + 1))!.party;
@@ -966,6 +966,207 @@ describe("locked-in party", () => {
     const second = await click(`kick:${s.id}:demo-sam`, "1003"); // Dev
     expect(second.data!.content).toContain("🚪 **Sam** was voted out.");
     expect(ids(second.data!)).not.toContain(`kick:${s.id}:demo-sam`);
+  });
+});
+
+describe("locked-in attendance: ✋ Join, the change log, and who showed up", () => {
+  const FOUR = ["demo-maya", "demo-dev", "demo-kai", "demo-sam"];
+  const made: string[] = [];
+  const user = (id: string) => ({ user: { id, username: id } });
+  const base = { id: "1", application_id: "app", token: "t", channel_id: "chan" };
+  const click = async (customId: string, discordId: string) => {
+    const tasks: Array<() => Promise<unknown>> = [];
+    const res = await handleInteraction(
+      { ...base, type: 3, member: user(discordId), data: { custom_id: customId }, message: { id: "msg", channel_id: "chan" } },
+      (t) => tasks.push(t),
+    );
+    return { ...res, tasks };
+  };
+  const ids = (msg: { components?: Array<{ components: Array<{ custom_id?: string }> }> }) =>
+    (msg.components ?? []).flatMap((r) => r.components.map((b) => b.custom_id));
+  const jordan = () => ctx.members.find((m) => m.name === "Jordan")!.id;
+
+  /** A Valorant session for `party`, starting at `startMs`. */
+  async function lockedIn(startMs: number, party = FOUR, minutes = 180) {
+    const db = await getDb();
+    const [session] = await db
+      .insert(playSessions)
+      .values({
+        groupId: ctx.group.id,
+        gameId: val().game.id,
+        kind: "planned",
+        startAt: new Date(startMs),
+        endAt: new Date(startMs + minutes * 60_000),
+        plan: { playMinutes: minutes, subs: 0, pauses: [] },
+        createdBy: "demo-kai",
+      })
+      .returning();
+    await db.insert(playSessionPlayers).values(party.map((userId) => ({ sessionId: session.id, userId, status: "in" as const })));
+    made.push(session.id);
+    return session;
+  }
+  /** The session's Discord post as it would be rendered now. */
+  const post = async (sessionId: string, c = ctx) => {
+    const [late, found] = await Promise.all([getLateTally(c.group.id, sessionId), getParty(c, sessionId)]);
+    return storedPlannedMessage(c, late!.session, late!.tally, found!.party);
+  };
+
+  beforeAll(async () => {
+    const db = await getDb();
+    for (const [userId, discordId] of [["demo-kai", "1001"], ["demo-sam", "1002"], ["demo-dev", "1003"]]) {
+      await db.update(memberProfiles).set({ discordId }).where(eq(memberProfiles.userId, userId));
+    }
+    // Earlier tests' lobbies ran moments ago, so everyone in them would count as seen during these sessions.
+    // Move them a month back.
+    const month = 30 * 24 * 3_600_000;
+    for (const l of await db.select().from(playSessions).where(eq(playSessions.kind, "live"))) {
+      await db
+        .update(playSessions)
+        .set({ status: "ended", startAt: new Date(l.startAt.getTime() - month), endAt: new Date((l.endAt ?? l.startAt).getTime() - month) })
+        .where(eq(playSessions.id, l.id));
+    }
+    ctx = await fresh();
+  });
+  afterAll(async () => {
+    const db = await getDb();
+    for (const id of made) await db.update(playSessions).set({ status: "cancelled" }).where(eq(playSessions.id, id));
+    await db.update(memberProfiles).set({ discordId: null }).where(eq(memberProfiles.userId, "demo-dev"));
+    ctx = await fresh();
+  });
+
+  it("lets anyone join before or after the start, and logs every change to the party", async () => {
+    const start = Date.now() + 3 * 3_600_000;
+    const at = (min: number) => start + min * 60_000;
+    const s = await lockedIn(start);
+    expect(await joinSession(ctx, s.id, "demo-rosa", at(-60))).toMatchObject({ rejoined: false, party: { joined: ["demo-rosa"] } });
+    await expect(joinSession(ctx, s.id, "demo-rosa")).rejects.toThrow(/already in/);
+    await toggleDropOut(ctx, s.id, "demo-kai", at(-30));
+    expect(await joinSession(ctx, s.id, "demo-kai", at(-20))).toMatchObject({ rejoined: true }); // Join works for drop-outs too
+    await toggleKickVote(ctx, s.id, "demo-maya", "demo-sam", at(-10));
+    expect((await toggleKickVote(ctx, s.id, "demo-dev", "demo-sam", at(-10))).removed).toBe(true);
+    await expect(joinSession(ctx, s.id, "demo-sam")).rejects.toThrow(/voted out/);
+    // After the start too (someone running late, or free for only the second half), until it ends.
+    expect([...(await joinSession(ctx, s.id, jordan(), at(40))).party.joined].sort()).toEqual(["demo-rosa", jordan()].sort());
+    await expect(joinSession(ctx, s.id, "demo-sam", s.endAt!.getTime() + 1)).rejects.toThrow(/over/);
+
+    const { party } = (await getParty(ctx, s.id))!;
+    expect(party.log.map((e) => `${e.userId} ${e.kind}`)).toEqual([
+      "demo-rosa joined",
+      "demo-kai left",
+      "demo-kai rejoined",
+      "demo-sam removed",
+      `${jordan()} joined`,
+    ]);
+    const msg = await post(s.id);
+    expect(msg.content).toContain(
+      "🔁 **Rosa** joined 1h before · **Kai** left 30m before · **Kai** rejoined 20m before · **Sam** was voted out 10m before · **Jordan** joined 40m in",
+    );
+    expect(ids(msg)).toEqual([`join:${s.id}`, `drop:${s.id}`, `kickmenu:${s.id}`]); // no attendance check before the start
+    assertDiscordLimits(msg);
+  });
+
+  it("lists who else is free for some or all of it, so they can join", async () => {
+    const zone = ctx.byId.get("demo-rosa")!.timezone;
+    const day = DateTime.now().setZone(zone).plus({ days: 2 }).set({ hour: 20, minute: 0, second: 0, millisecond: 0 });
+    const s = await lockedIn(day.toMillis()); // 8–11 PM in Rosa's zone, without her
+    const date = day.toISODate()!;
+    /** The group with Rosa's schedule for that day set to `pattern` (40 half hours from 8 AM). */
+    const withRosa = (pattern: string) => ({
+      ...ctx,
+      inputs: ctx.inputs.map((m) => (m.id === "demo-rosa" ? { ...m, overrides: { ...m.overrides, [date]: pattern } } : m)),
+    });
+    const found = (await getSession(ctx.group.id, s.id))!;
+    const rosa = (c: typeof ctx) =>
+      partyOf(c, found.session, found.players, found.votes, null, Date.now(), found.events).alsoFree.find((f) => f.id === "demo-rosa");
+    const secondHalf = withRosa(".".repeat(26) + "F".repeat(4) + ".".repeat(10)); // free 9–11 PM
+    expect(rosa(secondHalf)).toEqual({
+      id: "demo-rosa",
+      fromMs: day.plus({ hours: 1 }).toMillis(),
+      untilMs: day.plus({ hours: 3 }).toMillis(),
+      whole: false,
+    });
+    expect(rosa(withRosa("F".repeat(40)))).toMatchObject({ whole: true });
+    expect(rosa(withRosa(".".repeat(40)))).toBeUndefined();
+
+    const msg = await post(s.id, secondHalf);
+    expect(msg.content).toContain(`**Rosa** (<t:${day.plus({ hours: 1 }).toSeconds()}:t>–<t:${day.plus({ hours: 3 }).toSeconds()}:t>)`);
+    expect(msg.content).toContain("Tap ✋ Join to play, even for part of it.");
+  });
+
+  it("takes late and no-show reports (one or the other), and adds people who played without joining", async () => {
+    const start = Date.now() - 30 * 60_000;
+    const s = await lockedIn(start);
+    expect(await toggleNoShowReport(ctx, s.id, "demo-maya", "demo-sam")).toMatchObject({
+      reported: true,
+      tally: { noShows: { "demo-sam": 1 }, mineNoShow: ["demo-sam"] },
+    });
+    const changed = await toggleLateReport(ctx, s.id, "demo-maya", "demo-sam"); // Maya makes it "late" instead
+    expect(changed.tally).toMatchObject({ counts: { "demo-sam": 1 }, mine: ["demo-sam"], mineNoShow: [] });
+    expect(changed.tally.noShows).toEqual({});
+    await toggleNoShowReport(ctx, s.id, "demo-dev", "demo-sam");
+    expect((await toggleNoShowReport(ctx, s.id, "demo-kai", "demo-sam")).tally).toMatchObject({ needed: 2, noShows: { "demo-sam": 2 } });
+    await expect(toggleNoShowReport(ctx, s.id, "demo-sam", "demo-sam")).rejects.toThrow(/yourself/);
+    await expect(toggleNoShowReport(ctx, s.id, "demo-rosa", "demo-sam")).rejects.toThrow(/Only players/);
+
+    // ➕ Rosa played without being in the party: a teammate adds her.
+    await expect(addPlayer(ctx, s.id, "demo-rosa", "demo-rosa")).rejects.toThrow(/Only players/);
+    expect((await addPlayer(ctx, s.id, "demo-maya", "demo-rosa")).tally.players).toContain("demo-rosa");
+    await expect(addPlayer(ctx, s.id, "demo-maya", "demo-rosa")).rejects.toThrow(/already/);
+    expect((await getParty(ctx, s.id))!.party.log.map((e) => `${e.userId} ${e.kind}`)).toEqual(["demo-rosa added"]);
+
+    const { noShow, played } = attendanceOf((await getLateTally(ctx.group.id, s.id))!.tally);
+    expect(noShow).toEqual(["demo-sam"]);
+    expect([...played].sort()).toEqual(["demo-dev", "demo-kai", "demo-maya", "demo-rosa"]);
+    const msg = await post(s.id);
+    expect(msg.content).toContain("📋 **Attendance check is open**");
+    expect(msg.content).toContain("👻 No-show: **Sam** ×2 (counts as a no-show)");
+    expect(msg.content).toContain("**Rosa** played (added by a teammate) 30m in");
+    expect(ids(msg)).toEqual([`check:${s.id}`, `join:${s.id}`, `drop:${s.id}`, `kickmenu:${s.id}`]);
+    assertDiscordLimits(msg);
+
+    // A day later the check closes with the result, and the buttons go.
+    const later = start + 25 * 3_600_000;
+    const closed = (await getLateTally(ctx.group.id, s.id, null, later))!;
+    const done = storedPlannedMessage(ctx, closed.session, closed.tally, (await getParty(ctx, s.id, null, later))!.party);
+    expect(done.content).toContain("📋 Attendance check closed. ✅ Played: **Maya**, **Dev**, **Rosa**, **Kai** · 👻 No-show: **Sam**");
+    expect(done.components).toEqual([]);
+  });
+
+  it("works from Discord: a private panel to report, ➕ to add someone, and ✅ for anyone seen in a lobby", async () => {
+    const start = Date.now() - 60 * 60_000;
+    const s = await lockedIn(start);
+    const lobby = await startFreshLive(ctx, "demo-maya", start - 30 * 60_000);
+    await setPlayerStatus(ctx, lobby.sessionId, "demo-sam", "in"); // Sam tapped I'm in during the session
+    try {
+      const panel = await click(`check:${s.id}`, "1001"); // Kai
+      expect(panel).toMatchObject({ type: 4, data: { flags: 64 } });
+      const rows = panel.data!.components!;
+      expect(rows.map((r) => r.components[0].custom_id)).toEqual([...FOUR.map((id) => `chkl:${s.id}:${id}`), `chka:${s.id}`]);
+      expect(rows[2].components.every((b) => b.disabled)).toBe(true); // Kai's own row
+      expect(rows[3].components[1]).toMatchObject({ label: "In the lobby", disabled: true }); // Sam
+      assertDiscordLimits(panel.data!);
+      await expect(toggleNoShowReport(ctx, s.id, "demo-maya", "demo-sam")).rejects.toThrow(/in the lobby/);
+
+      const tap = await click(`chkn:${s.id}:demo-dev`, "1001");
+      expect(tap.type).toBe(7); // updates the panel
+      expect(tap.data!.content).toContain("👻 You reported **Dev** as a no-show (1 of 2 reports)");
+      expect(tap.tasks).toHaveLength(1); // and refreshes the shared post
+      expect((await click(`chkl:${s.id}:demo-dev`, "1001")).data!.content).toContain("⏰ You reported **Dev** as late");
+
+      const picker = await click(`chka:${s.id}`, "1001");
+      expect(ids(picker.data!)).toContain(`chkadd:${s.id}:${jordan()}`);
+      expect((await click(`chkadd:${s.id}:${jordan()}`, "1001")).data!.content).toContain("➕ Added **Jordan**");
+
+      // Before the start, the panel only says when it opens; ✋ Join is on the post.
+      const soon = await lockedIn(Date.now() + 5 * 3_600_000, ["demo-maya", "demo-dev", "demo-kai"]);
+      expect((await click(`check:${soon.id}`, "1001")).data!.content).toMatch(/opens when the session starts/);
+      const joined = await click(`join:${soon.id}`, "1002"); // Sam
+      expect(joined.type).toBe(7);
+      expect(joined.data!.content).toContain("🔁 **Sam** joined 5h before");
+      expect(joined.tasks).toHaveLength(1); // the private "you're in"
+    } finally {
+      await endSession(ctx, lobby.sessionId);
+    }
   });
 });
 

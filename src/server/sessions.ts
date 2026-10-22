@@ -1,7 +1,15 @@
 import { and, asc, desc, eq, gt, gte, inArray, lt, type SQL } from "drizzle-orm";
 import { DateTime } from "luxon";
 import { getDb } from "@/db";
-import { kickVotes, playSessionPlayers, playSessions, type PlayerStatus, type SessionPlan } from "@/db/schema";
+import {
+  kickVotes,
+  playSessionPlayers,
+  playSessions,
+  sessionEvents,
+  type PlayerStatus,
+  type SessionEventKind,
+  type SessionPlan,
+} from "@/db/schema";
 import type { PlayWindow } from "@/engine";
 import type { GameContext, GameView, GroupContext } from "./context";
 import { findWindowByBounds } from "./windows";
@@ -13,11 +21,31 @@ export interface KickVote {
   voterId: string;
   targetId: string;
 }
-/** A session with its players and the votes to remove someone. */
+/** A change to a locked-in party after it was locked in (see sessionEvents), oldest first. */
+export interface SessionEvent {
+  userId: string;
+  kind: SessionEventKind;
+  atMs: number;
+}
+/** A session with its players, the votes to remove someone, and its party's changes. */
 export interface SessionWithPlayers {
   session: PlaySession;
   players: SessionPlayer[];
   votes: KickVote[];
+  events: SessionEvent[];
+}
+
+const toEvent = (e: { userId: string; kind: SessionEventKind; createdAt: Date }): SessionEvent => ({
+  userId: e.userId,
+  kind: e.kind,
+  atMs: e.createdAt.getTime(),
+});
+const eventOrder = () => [asc(sessionEvents.createdAt), asc(sessionEvents.id)];
+
+/** Note a change to a locked-in party (Join, Can't make it, voted out…), for its post's change log. */
+export async function logSessionEvent(sessionId: string, userId: string, kind: SessionEventKind, nowMs = Date.now()) {
+  const db = await getDb();
+  await db.insert(sessionEvents).values({ sessionId, userId, kind, createdAt: new Date(nowMs) });
 }
 
 /** Lobby statuses that count as being in the lobby: in, on the way, or at dinner. */
@@ -36,21 +64,27 @@ async function findWithPlayers(
   const db = await getDb();
   const byStart = () => (order === "asc" ? asc(playSessions.startAt) : desc(playSessions.startAt));
   const ids = () => db.select({ id: playSessions.id }).from(playSessions).where(where()).orderBy(byStart()).limit(limit);
-  const [rows, players, votes] = await Promise.all([
+  const [rows, players, votes, events] = await Promise.all([
     db.select().from(playSessions).where(where()).orderBy(byStart()).limit(limit),
     db.select().from(playSessionPlayers).where(inArray(playSessionPlayers.sessionId, ids())),
     db.select().from(kickVotes).where(inArray(kickVotes.sessionId, ids())),
+    db
+      .select()
+      .from(sessionEvents)
+      .where(inArray(sessionEvents.sessionId, ids()))
+      .orderBy(...eventOrder()),
   ]);
   return rows.map((session) => ({
     session,
     players: players.filter((p) => p.sessionId === session.id),
     votes: votes.filter((v) => v.sessionId === session.id).map((v) => ({ voterId: v.voterId, targetId: v.targetId })),
+    events: events.filter((e) => e.sessionId === session.id).map(toEvent),
   }));
 }
 
 export async function getSession(groupId: string, sessionId: string): Promise<SessionWithPlayers | null> {
   const db = await getDb();
-  const [[session], players, votes] = await Promise.all([
+  const [[session], players, votes, events] = await Promise.all([
     db
       .select()
       .from(playSessions)
@@ -60,8 +94,13 @@ export async function getSession(groupId: string, sessionId: string): Promise<Se
       .select({ voterId: kickVotes.voterId, targetId: kickVotes.targetId })
       .from(kickVotes)
       .where(eq(kickVotes.sessionId, sessionId)),
+    db
+      .select()
+      .from(sessionEvents)
+      .where(eq(sessionEvents.sessionId, sessionId))
+      .orderBy(...eventOrder()),
   ]);
-  return session ? { session, players, votes } : null;
+  return session ? { session, players, votes, events: events.map(toEvent) } : null;
 }
 
 export function planFromWindow(w: PlayWindow): SessionPlan {

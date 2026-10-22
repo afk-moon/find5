@@ -300,6 +300,27 @@ export const lateReports = pgTable(
 );
 
 /**
+ * "X didn't show" reports from a locked-in session's attendance check. Like late reports: counts only, so
+ * reporters stay anonymous, and one reporter can't mark the same person late and a no-show.
+ */
+export const noShowReports = pgTable(
+  "no_show_reports",
+  {
+    sessionId: text("session_id")
+      .notNull()
+      .references(() => playSessions.id, { onDelete: "cascade" }),
+    reporterId: text("reporter_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    targetId: text("target_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    createdAt: createdAt(),
+  },
+  (t) => [primaryKey({ columns: [t.sessionId, t.reporterId, t.targetId] })],
+);
+
+/**
  * Votes to remove someone from a locked-in session's party (they're late, or can't make it but didn't say so).
  * Shown only as counts, so voters stay anonymous.
  */
@@ -318,6 +339,29 @@ export const kickVotes = pgTable(
     createdAt: createdAt(),
   },
   (t) => [primaryKey({ columns: [t.sessionId, t.voterId, t.targetId] })],
+);
+
+/**
+ * What happened to a locked-in session's party after it was locked in: "joined" (✋ Join), "left" (Can't make
+ * it), "rejoined", "removed" (voted out), "added" (a teammate marked them as having played).
+ */
+export const sessionEventKinds = ["joined", "left", "rejoined", "removed", "added"] as const;
+export type SessionEventKind = (typeof sessionEventKinds)[number];
+
+export const sessionEvents = pgTable(
+  "session_events",
+  {
+    id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+    sessionId: text("session_id")
+      .notNull()
+      .references(() => playSessions.id, { onDelete: "cascade" }),
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    kind: text("kind", { enum: sessionEventKinds }).notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [index("session_events_session_idx").on(t.sessionId)],
 );
 
 /**
