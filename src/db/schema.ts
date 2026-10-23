@@ -365,6 +365,22 @@ export const sessionEvents = pgTable(
 );
 
 /**
+ * Posts the bot makes by itself, once each (the day's windows at 11 AM, a window's lobby just before it starts):
+ * a ping claims its key first, so a second ping never posts it again. E.g. "windows:<game>:2026-10-23".
+ */
+export const autoPosts = pgTable(
+  "auto_posts",
+  {
+    groupId: text("group_id")
+      .notNull()
+      .references(() => groups.id, { onDelete: "cascade" }),
+    key: text("key").notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [primaryKey({ columns: [t.groupId, t.key] })],
+);
+
+/**
  * 👍 (1) or 👎 (-1) from one lobby member to another, one row per tap: as many as people like, but once
  * every couple of minutes per person (see RATING_COOLDOWN_MS). Shown as totals only.
  */

@@ -33,6 +33,7 @@ const { freeNowNotInLobby, stackDms } = await import("./notify");
 const { getParty, toggleDropOut, toggleKickVote, kickVotesNeeded, partyOf, joinSession } = await import("./party");
 const { rate, reportOffense, addFeedback, feedbackAbout, FEEDBACK_MAX_CHARS } = await import("./reputation");
 const { offensesFrom } = await import("@/engine/reputation");
+const { runAutoPosts, tickDue, autoPostGames } = await import("./autopost");
 const {
   lobbyMessage,
   lobbyReplacedMessage,
@@ -48,7 +49,7 @@ const {
 } = await import("@/discord/messages");
 const { handleInteraction, handleAutocomplete } = await import("@/discord/handlers");
 const { getDb } = await import("@/db");
-const { memberProfiles, playSessions, playSessionPlayers, playerFeedback } = await import("@/db/schema");
+const { memberProfiles, playSessions, playSessionPlayers, playerFeedback, groups } = await import("@/db/schema");
 const { DEMO_GROUP_ID } = await import("@/db/seed");
 const { pattern, lateVotingState, resolvePattern, currentGamingDay, EMPTY_PATTERN } = await import("@/engine");
 const { and, eq } = await import("drizzle-orm");
@@ -1697,5 +1698,73 @@ describe("lobby ratings, bannable offenses and /summary", () => {
       ["Next ▶ (2/2)", true],
     ]);
     assertDiscordLimits(paged);
+  });
+});
+
+describe("the bot's own posts: the day's Valorant windows at 11 AM, and each lobby 5 minutes before", () => {
+  const zone = "America/Los_Angeles";
+  const posts: string[] = [];
+  const made: string[] = [];
+  const realFetch = globalThis.fetch;
+
+  beforeAll(async () => {
+    const db = await getDb();
+    await db.update(groups).set({ discordChannelId: "chan" }).where(eq(groups.id, DEMO_GROUP_ID));
+    process.env.DISCORD_BOT_TOKEN = "test-token";
+    // Stand-in for Discord: keep what the bot posts in the channel.
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      if (String(url).endsWith("/channels/chan/messages") && init?.method === "POST") {
+        posts.push(JSON.parse(String(init.body)).content);
+        return Response.json({ id: `m${posts.length}` });
+      }
+      return Response.json({});
+    }) as typeof fetch;
+    ctx = await fresh();
+  });
+  afterAll(async () => {
+    globalThis.fetch = realFetch;
+    delete process.env.DISCORD_BOT_TOKEN;
+    const db = await getDb();
+    await db.update(groups).set({ discordChannelId: null }).where(eq(groups.id, DEMO_GROUP_ID));
+    for (const id of made) await db.update(playSessions).set({ status: "cancelled" }).where(eq(playSessions.id, id));
+    ctx = await fresh();
+  });
+
+  it("knows which pings have work to do without asking the database", () => {
+    const at = (iso: string) => DateTime.fromISO(iso, { zone }).toMillis();
+    expect(tickDue(at("2031-03-04T11:00"))).toEqual({ daily: true, lobbies: false });
+    expect(tickDue(at("2031-03-04T11:07"))).toEqual({ daily: false, lobbies: false });
+    expect(tickDue(at("2031-03-04T18:25"))).toEqual({ daily: false, lobbies: true }); // for a 6:30 window
+    expect(tickDue(at("2031-03-04T18:57"))).toEqual({ daily: false, lobbies: true }); // for a 7:00 window
+    expect(tickDue(at("2031-03-04T18:40"))).toEqual({ daily: false, lobbies: false });
+    expect(tickDue(at("2031-07-04T11:02"))).toMatchObject({ daily: true }); // daylight saving time too
+  });
+
+  it("posts the day's windows at 11 AM once, and locks in each window 5 minutes before it starts", async () => {
+    expect(autoPostGames(ctx).map((g) => g.name)).toEqual(["Valorant"]);
+    const taken = new Set((await upcomingPlanned(ctx.group.id)).map((p) => p.session.startAt.getTime()));
+    const w = upcomingWindows(val()).find(
+      (x) => x.startMs > Date.now() + 3_600_000 && !taken.has(x.startMs) && DateTime.fromMillis(x.startMs, { zone }).hour >= 12,
+    )!;
+    expect(w).toBeDefined();
+    const eleven = DateTime.fromMillis(w.startMs, { zone }).set({ hour: 11, minute: 0, second: 0, millisecond: 0 }).toMillis();
+
+    expect(await runAutoPosts(ctx, eleven - 60_000)).toEqual([]); // 10:59: not yet
+    expect((await runAutoPosts(ctx, eleven))[0]).toMatch(/^posted \d+ Valorant windows?$/);
+    expect(posts).toHaveLength(1);
+    expect(posts[0]).toContain("🎮 **Valorant today**");
+    expect(posts[0]).toContain(`<t:${w.startMs / 1000}:t>`);
+    expect(posts[0]).toContain("I'll post the locked-in lobby 5 minutes before");
+    expect(await runAutoPosts(ctx, eleven + 2 * 60_000)).toEqual([]); // once a day
+
+    expect(await runAutoPosts(ctx, w.startMs - 10 * 60_000)).toEqual([]); // too early for the lobby
+    expect(await runAutoPosts(ctx, w.startMs - 5 * 60_000)).toEqual([`locked in Valorant at ${new Date(w.startMs).toISOString()}`]);
+    expect(posts).toHaveLength(2);
+    expect(posts[1]).toContain("🔒 **Locked in: Valorant**");
+    const planned = (await upcomingPlanned(ctx.group.id)).find((p) => p.session.startAt.getTime() === w.startMs)!;
+    made.push(planned.session.id);
+    expect(planned.session.createdBy).toBeNull(); // the bot locked it in
+    expect(await runAutoPosts(ctx, w.startMs - 3 * 60_000)).toEqual([]); // once
+    expect(posts.join("\n")).not.toMatch(/League of Legends|Aion/); // Valorant only
   });
 });

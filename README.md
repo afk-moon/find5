@@ -26,6 +26,9 @@ line up their work-from-home days. It's a web app plus an optional Discord bot.
 - **Ratings & feedback:** in a lobby, 👍/👎 your teammates and report 🚫 bannable offenses, as often as every
   2 minutes per person (every 3 reports from 3 different people make an offense, and 3 offenses earn a comic
   🚨 **Certified Menace** tag), and leave anonymous feedback. `/summary @name` shows someone's numbers and every note people wrote about them.
+- **Auto Valorant lobbies:** no need to lock in on the website. At 11 AM Pacific the bot posts the day's
+  Valorant windows in Discord, and 5 minutes before each one starts it locks it in and posts the lobby,
+  pinging the party. It needs a free 5-minute ping (see [Deploying](#deploying)).
 - **Who showed up:** once a locked-in session starts, teammates mark who was late or never came, and add
   anyone who played without joining. Anyone late in more than half of their last 10 sessions gets a
   ⏰ **Frequently late** tag next to their name.
@@ -242,6 +245,19 @@ game: it pings whoever is free right now, and as people join it shows each game'
   of them in bigger lobbies), and votes are anonymous. They leave the lobby's count, and can tap I'm in to
   come back with a clean slate.
 
+**The bot's own posts.** For Valorant, nobody has to lock anything in:
+- At 11 AM Pacific the bot posts the day's Valorant windows (when they start and end, and who's free), if
+  there are any. It doesn't ping anyone.
+- 5 minutes before a window starts, it locks it in and posts the locked-in lobby, which pings the party. It
+  has ✋ Join, 🙅 Can't make it and the rest, like any locked-in session. If someone already locked that window
+  in on the website, it leaves it alone.
+- Windows are worked out again right before posting, so schedule changes during the day count.
+- `AUTO_POST_GAMES` (comma-separated game names, default `Valorant`) and `AUTO_POST_TIME_ZONE` (default
+  `America/Los_Angeles`) change which games and whose 11 AM. Other games still lock in on the website.
+- It all runs from `/api/cron/tick`, which needs a ping every 5 minutes (see [Deploying](#deploying)). Pings
+  with nothing to do return without touching the database, so it can still sleep in between (Neon's free
+  plan counts the time it's awake).
+
 **Join, can't make it, vote out.** On a locked-in session (its card on the Windows page, or its Discord post):
 - ✋ **Join** puts you in the party, before or after the start, until the session ends: a sub, someone
   running late, or someone free for only part of it. The party is otherwise the people free for the *whole*
@@ -386,13 +402,21 @@ This works on any Node host with a Postgres database. On Vercel with Neon:
    |---|---|
    | `APP_URL` | Your site's address, e.g. `https://your-project.vercel.app` (no trailing slash) |
    | `AUTH_SECRET` | Any long random string, e.g. from `node -e "console.log(crypto.randomUUID()+crypto.randomUUID())"` |
-   | `CRON_SECRET` | Another random string (protects the daily job) |
+   | `CRON_SECRET` | Another random string (protects the daily job and the 5-minute ping) |
    | Discord variables | Only if you use Discord (see [Discord setup](#discord-setup)) |
    | `SEED_DEMO` | `1` only if you want the demo friends in the hosted database |
    | `ALLOW_DEV_LOGIN` | `1` only to test without Discord login. Anyone with the link can then sign in as anyone |
 
 4. **Redeploy:** **Deployments → ⋯ → Redeploy**. Variable changes only apply to new deployments. The
    database tables are created automatically on the first visit.
+
+5. **Set up the 5-minute ping** (for the bot's own Valorant posts). Vercel's free plan only runs scheduled
+   jobs once a day, so use a free service like [cron-job.org](https://cron-job.org): create a job for
+   `https://<your-site>/api/cron/tick`, every 5 minutes, and under **Advanced → Headers** add
+   `Authorization` with the value `Bearer <your CRON_SECRET>`. (If a service can't send headers, use
+   `https://<your-site>/api/cron/tick?key=<your CRON_SECRET>` instead.) On Vercel's Pro plan you can
+   instead add `{ "path": "/api/cron/tick", "schedule": "*/5 * * * *" }` to the `crons` in `vercel.json`
+   (the free plan rejects deployments with that). Without the ping, everything else still works.
 
 How people log in: with Discord login set up, each friend clicks **Log in with Discord** and joins the
 group automatically. The first person creates it. Without Discord, set `ALLOW_DEV_LOGIN=1` and use

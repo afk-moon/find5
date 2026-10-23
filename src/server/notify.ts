@@ -5,6 +5,7 @@ import {
   lobbyMessage,
   lobbyReplacedMessage,
   partyLabel,
+  dailyWindowsMessage,
   plannedSessionMessage,
   stackReadyDm,
   storedPlannedMessage,
@@ -65,15 +66,25 @@ export function freeNowNotInLobby(ctx: GroupContext, lobby: Iterable<string>): s
 const partyDescription = (ctx: GroupContext, party: readonly string[]) =>
   `Party: ${party.map((id) => ctx.byId.get(id)?.name ?? "someone").join(", ")}`;
 
-/** Post the locked-in session (with its dinner/last-queue timeline and late check) and create a Scheduled Event. */
-export function announceLockIn(ctx: GameContext, session: PlaySession, window: PlayWindow) {
+/** Post the day's windows for a game (the bot does this in the morning, see autopost.ts). */
+export function postDailyWindows(ctx: GameContext, windows: readonly PlayWindow[], leadMinutes: number) {
+  return safely("daily windows", async () => {
+    if (ctx.group.discordChannelId) await postMessage(ctx.group.discordChannelId, dailyWindowsMessage(ctx, windows, leadMinutes));
+  });
+}
+
+/**
+ * Post the locked-in session (with its dinner/last-queue timeline and late check) and create a Scheduled Event.
+ * `event: false` skips the event (the bot's own lock-ins happen minutes before the start; the post pings the party).
+ */
+export function announceLockIn(ctx: GameContext, session: PlaySession, window: PlayWindow, { event = true } = {}) {
   return safely("lock-in", async () => {
     const channelId = ctx.group.discordChannelId;
     if (!channelId) return;
     const [late, found] = await Promise.all([getLateTally(ctx.group.id, session.id), getParty(ctx, session.id)]);
     const posted = await postMessage(channelId, plannedSessionMessage(ctx, window, late?.tally, found?.party));
     let eventId: string | null = null;
-    if (ctx.group.discordGuildId && window.startMs > Date.now() + 60_000) {
+    if (event && ctx.group.discordGuildId && window.startMs > Date.now() + 60_000) {
       const event = await createScheduledEvent(ctx.group.discordGuildId, {
         name: `${ctx.game.name} ${partyLabel(ctx.game.partySize)}`,
         description: partyDescription(ctx, window.party),

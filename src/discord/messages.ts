@@ -208,6 +208,29 @@ export function plannedSessionMessage(
   };
 }
 
+/**
+ * The day's windows for a game, posted by the bot in the morning: times as Discord timestamps (everyone sees
+ * their own zone) and who's free, without pinging anyone. The lobby follows `leadMinutes` before each one.
+ */
+export function dailyWindowsMessage(ctx: GameContext, windows: readonly PlayWindow[], leadMinutes: number): DiscordMessage {
+  const P = ctx.game.partySize;
+  const lines = windows.map((w) => {
+    const more = w.party.length > P ? ` · ${w.party.length} free for ${P} spots` : "";
+    return `• ${discordTs(w.startMs)}–${discordTs(w.endMs)} (${discordTs(w.startMs, "R")}): ${names(ctx, w.party)}${more}`;
+  });
+  const one = windows.length === 1;
+  return {
+    content: [
+      `🎮 **${ctx.game.name} today**: ${one ? "a window" : `${windows.length} windows`} when ${P} of you are free`,
+      ...lines,
+      `I'll post the locked-in lobby ${leadMinutes} minutes before ${one ? "it starts" : "each one starts"}. Can't make it? Change your availability before then.`,
+    ]
+      .join("\n")
+      .slice(0, 2000),
+    allowed_mentions: NO_PINGS,
+  };
+}
+
 /** The locked-in message for a saved session, with its current party and late check. */
 export function storedPlannedMessage(ctx: GroupContext, session: PlaySession, late: LateTally, party: PartyState): DiscordMessage {
   return plannedSessionMessage(

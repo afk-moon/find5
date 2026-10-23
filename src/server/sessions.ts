@@ -113,8 +113,11 @@ export function planFromWindow(w: PlayWindow): SessionPlan {
 
 // ─── Planned sessions ──────────────────────────────────────────────────────────────────────
 
-/** Lock in one of a game's suggested windows. The window is re-computed server-side; returns the session and window. */
-export async function lockInWindow(ctx: GameContext, userId: string, startMs: number, endMs: number) {
+/**
+ * Lock in one of a game's suggested windows. The window is re-computed server-side; returns the session and
+ * window. `userId` is who locked it in, or null when the bot did (see autopost.ts).
+ */
+export async function lockInWindow(ctx: GameContext, userId: string | null, startMs: number, endMs: number) {
   const window = findWindowByBounds(ctx, startMs, endMs);
   if (!window) throw new Error("That window isn't available anymore. Someone's availability changed.");
   const db = await getDb();

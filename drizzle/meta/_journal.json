@@ -64,6 +64,13 @@
       "when": 1792693877213,
       "tag": "0008_session_attendance",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1792789642309,
+      "tag": "0009_auto_posts",
+      "breakpoints": true
     }
   ]
 }
